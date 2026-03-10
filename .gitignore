@@ -1,0 +1,6 @@
+.vscode/
+.idsse_venv/
+data/
+idsse-data/
+
+.DS_Store
