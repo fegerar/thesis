@@ -1,6 +1,11 @@
 .vscode/
 .idsse_venv/
+.venv/
 data/
 idsse-data/
 
 .DS_Store
+
+*__pycache__/
+*.pkl
+shapegraph_viz.png
