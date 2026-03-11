@@ -17,6 +17,31 @@ POSITION_MATRIX = {
     (0, 0): "LB",  (0, 1): "LCB", (0, 2): "CB",  (0, 3): "RCB", (0, 4): "RB",
 }
 
+# Canonical (x, y) positions for each role in "attacking up" (+X) coordinates.
+# Row (v_level): 0=defenders → 4=forwards along X axis.
+# Col (h_level): 0=left (+Y) → 4=right (-Y) from team's perspective.
+_NOMINAL_LONG = {0: -35.0, 1: -20.0, 2: 0.0, 3: 20.0, 4: 35.0}
+_NOMINAL_TRANS_UP = {0: 25.0, 1: 12.5, 2: 0.0, 3: -12.5, 4: -25.0}
+
+_NOMINAL_POSITIONS_UP: Dict[str, Tuple[float, float]] = {
+    role: (_NOMINAL_LONG[r], _NOMINAL_TRANS_UP[c])
+    for (r, c), role in POSITION_MATRIX.items()
+}
+_NOMINAL_POSITIONS_UP["GK"] = (-48.0, 0.0)
+
+
+def get_nominal_position(role: str, attacking_direction: str = "up") -> Tuple[float, float]:
+    """
+    Return the nominal (x, y) pitch coordinates for a given role.
+
+    For teams attacking down (-X), the field is mirrored on both axes so
+    that the formation stays consistent from each team's perspective.
+    """
+    x, y = _NOMINAL_POSITIONS_UP.get(role, (0.0, 0.0))
+    if attacking_direction != "up":
+        x, y = -x, -y
+    return (x, y)
+
 
 def _split_levels(indices: List[int], values: np.ndarray,
                   face_centers: List[float]) -> List[List[int]]:

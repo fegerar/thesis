@@ -1,5 +1,6 @@
 # Vibecoded by Antigravity
 
+import math
 import pickle
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -47,6 +48,24 @@ def plot_shapegraph(G, ax=None, title=None):
 
         if data.get('has_ball', False):
             has_ball_node = node
+
+    # Resolve overlapping nodes by spreading coincident positions in a small circle.
+    # Group nodes that share the same (rounded) coordinate.
+    _JITTER_RADIUS = 1.5  # metres
+    from collections import defaultdict
+    bucket: dict = defaultdict(list)
+    for node, (x, y) in pos.items():
+        key = (round(x, 3), round(y, 3))
+        bucket[key].append(node)
+
+    for key, nodes in bucket.items():
+        if len(nodes) == 1:
+            continue
+        cx, cy = key
+        for k, node in enumerate(nodes):
+            angle = 2 * math.pi * k / len(nodes)
+            pos[node] = (cx + _JITTER_RADIUS * math.cos(angle),
+                         cy + _JITTER_RADIUS * math.sin(angle))
 
     # Draw edges
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.5, edge_color='gray')
@@ -108,13 +127,29 @@ def main():
         print(f"Generating video with {len(frames)} frames at {args.fps} FPS...")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = None
-        
-        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Detect whether data contains paired original/nominal graphs
+        sample = data[frames[0]]
+        has_nominal = isinstance(sample, dict) and "nominal" in sample
+
+        if has_nominal:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 8))
+        else:
+            fig, ax = plt.subplots(figsize=(12, 8))
         
         for i, frame_id in enumerate(frames):
-            ax.clear()
-            G = data[frame_id]
-            plot_shapegraph(G, ax=ax, title=f"Shapegraph Visualization - Frame {frame_id}")
+            entry = data[frame_id]
+            if has_nominal:
+                ax1.clear()
+                ax2.clear()
+                G_orig = entry["original"]
+                G_nom  = entry["nominal"]
+                plot_shapegraph(G_orig, ax=ax1, title=f"Actual positions — Frame {frame_id}")
+                plot_shapegraph(G_nom,  ax=ax2, title=f"Nominal positions — Frame {frame_id}")
+            else:
+                ax.clear()
+                G_orig = entry if not isinstance(entry, dict) else entry.get("original", entry)
+                plot_shapegraph(G_orig, ax=ax, title=f"Shapegraph Visualization - Frame {frame_id}")
             
             plt.tight_layout()
             buf = io.BytesIO()
@@ -144,10 +179,19 @@ def main():
             print(f"Frame {target_frame} not found in the data. Falling back to the first available frame '{frames[0]}'.")
             target_frame = frames[0]
 
-        G = data[target_frame]
-        
-        fig, ax = plt.subplots(figsize=(12, 8))
-        plot_shapegraph(G, ax=ax, title=f"Shapegraph Visualization - Frame {target_frame}")
+        entry = data[target_frame]
+        has_nominal = isinstance(entry, dict) and "nominal" in entry
+
+        if has_nominal:
+            G_orig = entry["original"]
+            G_nom  = entry["nominal"]
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 8))
+            plot_shapegraph(G_orig, ax=ax1, title=f"Actual positions — Frame {target_frame}")
+            plot_shapegraph(G_nom,  ax=ax2, title=f"Nominal positions — Frame {target_frame}")
+        else:
+            G_orig = entry if not isinstance(entry, dict) else entry.get("original", entry)
+            fig, ax = plt.subplots(figsize=(12, 8))
+            plot_shapegraph(G_orig, ax=ax, title=f"Shapegraph Visualization - Frame {target_frame}")
         
         plt.tight_layout()
         plt.savefig(args.output, dpi=150)

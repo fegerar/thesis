@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 
 from idsse.data import parse_match_info, parse_position_data
-from shapegraphs.inference import infer_positions_all
+from shapegraphs.inference import infer_positions_all, get_nominal_position
 from shapegraphs.utils import compute_shape_graph
 
 
@@ -19,7 +19,7 @@ def frame_to_shapegraph(
     match_info: dict,
     home_attacking_up_first_half: bool = True,
     game_section: str = "firstHalf",
-) -> Optional[nx.Graph]:
+) -> Optional[Tuple[nx.Graph, nx.Graph]]:
     """
     Convert a single frame of tracking data to a shape graph (NetworkX graph).
     """
@@ -27,7 +27,7 @@ def frame_to_shapegraph(
     ball_data = frame_data.get("ball", None)
 
     if len(players_data) < 4:
-        return None
+        return None, None
 
     # Build ordered arrays
     # Filter out referees and unknown persons
@@ -90,7 +90,41 @@ def frame_to_shapegraph(
     G.graph["timestamp"] = frame_data.get("timestamp", "")
     G.graph["ball"] = ball_data
 
-    return G
+    nominal_points = np.zeros((n, 2))
+    for i in range(n):
+        role = positions.get(i, "CM")
+        atk_dir = "up" if (teams[i] == "home") == home_up else "down"
+        nom_x, nom_y = get_nominal_position(role, atk_dir)
+        nominal_points[i] = [nom_x, nom_y]
+
+    sg_edges_nominal = compute_shape_graph(nominal_points, alpha_threshold=math.pi / 4)
+
+    G_nominal = nx.Graph()
+    for i, pid in enumerate(person_ids):
+        pinfo = match_info["players"].get(pid, {})
+        G_nominal.add_node(pid,
+                           index=i,
+                           x=float(nominal_points[i, 0]),
+                           y=float(nominal_points[i, 1]),
+                           team=teams[i],
+                           inferred_role=positions.get(i, "?"),
+                           original_position=pinfo.get("position", ""),
+                           shirt=pinfo.get("shirt", 0),
+                           name=pinfo.get("name", ""),
+                           has_ball=(i == has_ball_idx)
+                        )
+
+    for u, v in sg_edges_nominal:
+        pid_u = person_ids[u]
+        pid_v = person_ids[v]
+        dist = float(np.linalg.norm(nominal_points[u] - nominal_points[v]))
+        cross_team = teams[u] != teams[v]
+        G_nominal.add_edge(pid_u, pid_v, distance=dist, cross_team=cross_team)
+
+    G_nominal.graph["timestamp"] = frame_data.get("timestamp", "")
+    G_nominal.graph["ball"] = ball_data
+
+    return G, G_nominal
 
 
 def generate_shapegraphs(
@@ -153,10 +187,11 @@ def generate_shapegraphs(
         # In the Bassek dataset, first half is typically frames < ~75000
         game_section = "firstHalf" if fn < 80000 else "secondHalf"
 
-        G = frame_to_shapegraph(fd, match_info, home_attacking_up, game_section)
+        G, G_nominal = frame_to_shapegraph(fd, match_info, home_attacking_up, game_section)
         if G is not None:
             G.graph["frame_number"] = fn
-            results[fn] = G
+            G_nominal.graph["frame_number"] = fn
+            results[fn] = {"original": G, "nominal": G_nominal}
 
     if verbose:
         print(f"Generated {len(results)} shape graphs")
