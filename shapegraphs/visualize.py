@@ -71,8 +71,10 @@ def plot_shapegraph(G, ax=None, title=None):
 def main():
     parser = argparse.ArgumentParser(description="Visualize a Shapegraph from a pickle file")
     parser.add_argument("pkl_file", help="Path to shapegraphs.pkl")
-    parser.add_argument("--frame", type=int, default=None, help="Specific frame number to plot")
-    parser.add_argument("--output", type=str, default="shapegraph_viz.png", help="Output image file")
+    parser.add_argument("--frame", type=int, default=None, help="Specific frame number to plot (ignored if --video is set)")
+    parser.add_argument("--output", type=str, default="shapegraph_viz.png", help="Output image file (or video file if --video is set)")
+    parser.add_argument("--video", action="store_true", help="Generate a video of all frames instead of a single image")
+    parser.add_argument("--fps", type=int, default=10, help="Frames per second for the video (default: 10)")
     
     args = parser.parse_args()
 
@@ -91,20 +93,65 @@ def main():
     frames = sorted(list(data.keys()))
     print(f"Loaded {len(frames)} frames. Available range: {frames[0]} to {frames[-1]}")
 
-    target_frame = args.frame if args.frame is not None else frames[0]
-    
-    if target_frame not in data:
-        print(f"Frame {target_frame} not found in the data. Falling back to the first available frame '{frames[0]}'.")
-        target_frame = frames[0]
+    if args.video:
+        import cv2
+        import numpy as np
+        import io
+        
+        out_path = args.output
+        if not out_path.endswith('.mp4'):
+            if out_path == "shapegraph_viz.png":
+                out_path = "shapegraph_viz.mp4"
+            else:
+                out_path = out_path.rsplit('.', 1)[0] + '.mp4'
+                
+        print(f"Generating video with {len(frames)} frames at {args.fps} FPS...")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = None
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        for i, frame_id in enumerate(frames):
+            ax.clear()
+            G = data[frame_id]
+            plot_shapegraph(G, ax=ax, title=f"Shapegraph Visualization - Frame {frame_id}")
+            
+            plt.tight_layout()
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=150)
+            buf.seek(0)
+            img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            
+            if writer is None:
+                height, width, _ = img.shape
+                writer = cv2.VideoWriter(out_path, fourcc, args.fps, (width, height))
+                
+            writer.write(img)
+            
+            if i > 0 and i % 10 == 0:
+                print(f"Processed {i}/{len(frames)} frames...")
+                
+        if writer is not None:
+            writer.release()
+        plt.close(fig)
+        print(f"Saved video to {out_path}")
 
-    G = data[target_frame]
-    
-    fig, ax = plt.subplots(figsize=(12, 8))
-    plot_shapegraph(G, ax=ax, title=f"Shapegraph Visualization - Frame {target_frame}")
-    
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=150)
-    print(f"Saved visualization to {args.output}")
+    else:
+        target_frame = args.frame if args.frame is not None else frames[0]
+        
+        if target_frame not in data:
+            print(f"Frame {target_frame} not found in the data. Falling back to the first available frame '{frames[0]}'.")
+            target_frame = frames[0]
+
+        G = data[target_frame]
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        plot_shapegraph(G, ax=ax, title=f"Shapegraph Visualization - Frame {target_frame}")
+        
+        plt.tight_layout()
+        plt.savefig(args.output, dpi=150)
+        print(f"Saved visualization to {args.output}")
 
 if __name__ == "__main__":
     main()

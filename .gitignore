@@ -9,3 +9,4 @@ idsse-data/
 *__pycache__/
 *.pkl
 shapegraph_viz.png
+shapegraph_viz.mp4
