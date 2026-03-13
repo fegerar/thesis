@@ -4,7 +4,7 @@
 
 # ---------- Data ----------
 data:
-  pickle_path: "shapegraphs.pkl"          # path to the shapegraphs pickle
+  pickle_path: "/content/drive/MyDrive/thesis/shapegraphs.pkl"          # path to the shapegraphs pickle
   game_index: 0                            # which game (0-6)
   frame_index: 0                           # which frame within the game (by sorted order)
   graph_type: "original"                   # "original" or "nominal"
