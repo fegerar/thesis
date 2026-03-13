@@ -44,13 +44,15 @@ def create_gae(config, dataset):
     if "concat" in dec:
         dec.pop("concat")
     if "dec_dropout" in dec:
-        dec["dropout"] = dec["dec_dropout"]
-
+        dec["dropout"] = dec.pop("dec_dropout")
+    # Remove keys that are passed explicitly or are encoder-only
+    for k in ("heads", "dec_heads", "node_encoder", "layer"):
+        dec.pop(k, None)
 
     node_decoder = GNN(
         input_dim=encoder.emb_dim if vq is None else vq.code_dim,
         output_dim=dataset.num_features,
-        heads=dec.get("dec_heads", 4),
+        heads=config.gnn.get("dec_heads", 4),
         layer="gat",
         **dec   
     )
