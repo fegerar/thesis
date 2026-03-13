@@ -2,4 +2,4 @@ networkx
 scipy
 tqdm
 matplotlib
-shapegraphs
+git+https://github.com/fegerar/shapegraphs.git
