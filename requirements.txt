@@ -3,3 +3,5 @@ scipy
 tqdm
 matplotlib
 git+https://github.com/fegerar/shapegraphs.git
+lightning
+ogb
