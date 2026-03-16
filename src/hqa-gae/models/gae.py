@@ -54,14 +54,14 @@ class GAE(pl.LightningModule):
         return loss
 
     @torch.no_grad()
-    def validation_step(self, batch, batch_idx, dataloader_idx):
+    def validation_step(self, batch, batch_idx):
         self.model.eval()
         x, edge_index = batch.x, batch.edge_index
         pos_edges, neg_edges = batch.pos_edge_label_index, batch.neg_edge_label_index
             
         x = x.clamp(0, 1)
         emb = self.model.get_embedding(x, edge_index)
-        # if self.split_edge:
+        
         lp_result = test_link_prediction(emb,
                                         pos_edges=pos_edges, neg_edges=neg_edges,
                                         batch_size=65536)
@@ -69,10 +69,8 @@ class GAE(pl.LightningModule):
         if lp_result["AUC"] >= self.best_score:
             self.best_score = lp_result["AUC"]
             self.best_model = copy.deepcopy(self.model)
-        if dataloader_idx == 0:
-            self.log_dict({f"valid_{k}": v  for k, v in lp_result.items()}, add_dataloader_idx=False, prog_bar=True)
-        else:
-            self.log_dict({f"test_{k}": v  for k, v in lp_result.items()}, add_dataloader_idx=False, prog_bar=True)
+            
+        self.log_dict({f"valid_{k}": v  for k, v in lp_result.items()}, prog_bar=True)
 
     def on_after_backward(self) -> None:
         for name, param in self.model.named_parameters():

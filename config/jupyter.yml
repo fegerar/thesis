@@ -59,16 +59,16 @@ scheduler:
 
 # ---------- Training ----------
 train:
-  epochs: 100
+  epochs: 5
   device: "cuda"
   seed: 42
   batch_size: 64                     # graphs per batch
   num_workers: 2                     # dataloader workers
   val_ratio: 0.05                    # fraction of graphs for validation
   test_ratio: 0.10                   # fraction of graphs for test
-  val_every_n_epoch: 5               # run validation every N epochs
-  checkpoint_every: 10               # save checkpoint every N epochs
-  log_interval: 10                   # log metrics every N steps
+  val_every_n_epoch: 1               # run validation every N epochs
+  checkpoint_every: 1                # save checkpoint every N epochs
+  log_interval: 1                    # log metrics every N steps
 
 # ---------- Wandb ----------
 wandb:

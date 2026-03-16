@@ -225,12 +225,16 @@ class ShapegraphDataModule(pl.LightningDataModule):
 
         self.train_data = [all_data[i] for i in train_indices]
 
-        # For val/test: create edge splits per graph for link prediction
-        self.val_data = self._prepare_eval_graphs([all_data[i] for i in val_indices])
-        self.test_data = self._prepare_eval_graphs([all_data[i] for i in test_indices])
+        # For val: create edge splits per graph for link prediction.
+        # We merge validation and test graphs into one conceptual "validation set"
+        # because during training, we just want to see live eval metrics.
+        # PyG / Lightning gets confused with multiple val dataloaders and renames metrics.
+        
+        eval_graphs = [all_data[i] for i in val_indices + test_indices]
+        self.val_data = self._prepare_eval_graphs(eval_graphs)
 
         print(f"Dataset split: {len(self.train_data)} train, "
-              f"{len(self.val_data)} val, {len(self.test_data)} test")
+              f"{len(self.val_data)} validation")
 
     @staticmethod
     def _prepare_eval_graphs(graphs: list[Data]) -> list[Data]:
@@ -261,16 +265,12 @@ class ShapegraphDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        return [
-            PyGDataLoader(
-                self.val_data, batch_size=self.batch_size,
-                shuffle=False, num_workers=self.num_workers
-            ),
-            PyGDataLoader(
-                self.test_data, batch_size=self.batch_size,
-                shuffle=False, num_workers=self.num_workers
-            ),
-        ]
+        # Return a single dataloader so Lightning logs the exact keys 'valid_AUC', 
+        # instead of appending '/dataloader_idx_0' which confuses wandb.
+        return PyGDataLoader(
+            self.val_data, batch_size=self.batch_size,
+            shuffle=False, num_workers=self.num_workers
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
