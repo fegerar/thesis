@@ -1,5 +1,5 @@
 """
-Train HQA-GAE on a single shapegraph from shapegraphs.pkl.
+Train HQA-GAE on all shapegraphs from shapegraphs.pkl.
 
 Usage:
     python src/train_gae.py --config config/shapegraph_hqa_gae.yml
@@ -21,8 +21,9 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
     TQDMProgressBar,
 )
-from torch_geometric.data import Data
+from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader as PyGDataLoader
+from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
 # Make hqa_gae importable  (directory is named "hqa-gae")
@@ -36,7 +37,6 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from hqa_gae.utils.argutil import parse_yaml          # noqa: E402
-from hqa_gae.utils.optim import build_optimizer        # noqa: E402
 from hqa_gae.utils.random import set_random_seed       # noqa: E402
 from hqa_gae.utils.datautil import DataUtil            # noqa: E402
 from hqa_gae.models import create_gae, GAE             # noqa: E402
@@ -44,19 +44,26 @@ from hqa_gae.utils.test import test_link_prediction    # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Role vocabulary builder (scans ALL graphs first)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_role_vocab(all_games, graph_type: str) -> list[str]:
+    """Scan every graph in every game to collect all unique inferred roles."""
+    roles = set()
+    for game in all_games:
+        for frame_key in game:
+            entry = game[frame_key]
+            G = entry[graph_type]
+            for _, d in G.nodes(data=True):
+                roles.add(d.get("inferred_role", "?"))
+    return sorted(roles)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Shapegraph → PyG Data conversion
 # ═══════════════════════════════════════════════════════════════════════════
 
-_ROLE_VOCAB: list[str] | None = None   # built lazily on first call
-
-
-def _build_role_vocab(G: nx.Graph) -> list[str]:
-    """Collect all unique inferred roles from the graph."""
-    roles = sorted({d.get("inferred_role", "?") for _, d in G.nodes(data=True)})
-    return roles
-
-
-def shapegraph_to_pyg(G: nx.Graph, cfg) -> Data:
+def shapegraph_to_pyg(G: nx.Graph, cfg, role_vocab: list[str]) -> Data:
     """
     Convert a NetworkX shapegraph to a ``torch_geometric.data.Data`` object.
 
@@ -64,10 +71,12 @@ def shapegraph_to_pyg(G: nx.Graph, cfg) -> Data:
     has_ball binary, inferred_role one-hot, shirt normalised).
     Coordinates (x, y) are **not** included.
     """
-    global _ROLE_VOCAB
-
     nodes = list(G.nodes(data=True))
     n = len(nodes)
+
+    if n < 2:
+        return None
+
     pid_to_idx = {pid: i for i, (pid, _) in enumerate(nodes)}
 
     # --- Build feature vectors ---
@@ -89,10 +98,8 @@ def shapegraph_to_pyg(G: nx.Graph, cfg) -> Data:
         feat_parts.append(ball_feat)
 
     if cfg.node_features.use_inferred_role:
-        if _ROLE_VOCAB is None:
-            _ROLE_VOCAB = _build_role_vocab(G)
-        role2idx = {r: j for j, r in enumerate(_ROLE_VOCAB)}
-        role_feat = np.zeros((n, len(_ROLE_VOCAB)), dtype=np.float32)
+        role2idx = {r: j for j, r in enumerate(role_vocab)}
+        role_feat = np.zeros((n, len(role_vocab)), dtype=np.float32)
         for i, (_, d) in enumerate(nodes):
             r = d.get("inferred_role", "?")
             if r in role2idx:
@@ -102,7 +109,7 @@ def shapegraph_to_pyg(G: nx.Graph, cfg) -> Data:
     if cfg.node_features.get("use_shirt", False):
         shirt_feat = np.zeros((n, 1), dtype=np.float32)
         for i, (_, d) in enumerate(nodes):
-            shirt_feat[i, 0] = d.get("shirt", 0) / 99.0  # normalise
+            shirt_feat[i, 0] = d.get("shirt", 0) / 99.0
         feat_parts.append(shirt_feat)
 
     x = np.concatenate(feat_parts, axis=1) if feat_parts else np.ones((n, 1), dtype=np.float32)
@@ -114,10 +121,35 @@ def shapegraph_to_pyg(G: nx.Graph, cfg) -> Data:
         ui, vi = pid_to_idx[u], pid_to_idx[v]
         src.extend([ui, vi])
         dst.extend([vi, ui])
-    edge_index = torch.tensor([src, dst], dtype=torch.long)
 
+    if len(src) == 0:
+        return None
+
+    edge_index = torch.tensor([src, dst], dtype=torch.long)
     data = Data(x=x_tensor, edge_index=edge_index)
     return data
+
+
+def load_all_shapegraphs(all_games, cfg, role_vocab: list[str]) -> list[Data]:
+    """Convert ALL shapegraphs from ALL games into PyG Data objects."""
+    graph_type = cfg.data.get("graph_type", "original")
+    all_data = []
+
+    total_frames = sum(len(game) for game in all_games)
+    print(f"Converting {total_frames} shapegraphs across {len(all_games)} games ...")
+
+    for game_idx, game in enumerate(all_games):
+        for frame_key in tqdm(sorted(game.keys()),
+                              desc=f"Game {game_idx+1}/{len(all_games)}",
+                              leave=False):
+            entry = game[frame_key]
+            G = entry[graph_type]
+            data = shapegraph_to_pyg(G, cfg, role_vocab)
+            if data is not None:
+                all_data.append(data)
+
+    print(f"Converted {len(all_data)} valid shapegraphs (skipped {total_frames - len(all_data)})")
+    return all_data
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -146,60 +178,92 @@ class CSVMetricsCallback(Callback):
                 writer.writerow(metrics)
             self._header_written = True
         else:
-            # Check for new columns
             new_keys = sorted(metrics.keys())
             if new_keys != self._fieldnames:
                 self._fieldnames = new_keys
-                # Re-write header by re-opening; simpler: just use extrasaction
             with open(self.csv_path, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=self._fieldnames, extrasaction="ignore")
                 writer.writerow(metrics)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# LightningDataModule wrapper (single graph)
+# LightningDataModule (all graphs, train/val/test split)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ShapegraphDataModule(pl.LightningDataModule):
-    """Wraps a single PyG graph for training + val/test with edge splits."""
+    """
+    Splits all shapegraphs into train/val/test sets.
+    Training uses full edge_index per graph. Validation/test graphs
+    get edge splits for link prediction evaluation.
+    """
 
-    def __init__(self, data: Data, val_ratio: float, test_ratio: float):
+    def __init__(self, all_data: list[Data], cfg):
         super().__init__()
-        self.full_data = data
+        val_ratio = cfg.train.get("val_ratio", 0.05)
+        test_ratio = cfg.train.get("test_ratio", 0.10)
+        batch_size = cfg.train.get("batch_size", 64)
+        num_workers = cfg.train.get("num_workers", 0)
 
-        # Split edges for link prediction evaluation
-        split = DataUtil.train_test_split_edges(
-            data.edge_index, num_node=data.x.size(0),
-            val_ratio=val_ratio, test_ratio=test_ratio,
-        )
+        self.batch_size = batch_size
+        self.num_workers = num_workers
 
-        # Training graph uses only training edges
-        self.train_data = Data(
-            x=data.x,
-            edge_index=split["pos"]["train"],
-        )
+        # Shuffle and split graphs into train / val / test
+        n = len(all_data)
+        indices = torch.randperm(n).tolist()
+        n_val = max(1, int(n * val_ratio))
+        n_test = max(1, int(n * test_ratio))
 
-        # Validation / test graphs carry pos + neg edge labels
-        self.val_data = Data(
-            x=data.x,
-            edge_index=split["pos"]["train"],  # message-passing on train edges
-            pos_edge_label_index=split["pos"]["val"],
-            neg_edge_label_index=split["neg"]["val"],
-        )
-        self.test_data = Data(
-            x=data.x,
-            edge_index=split["pos"]["train"],
-            pos_edge_label_index=split["pos"]["test"],
-            neg_edge_label_index=split["neg"]["test"],
-        )
+        val_indices = indices[:n_val]
+        test_indices = indices[n_val:n_val + n_test]
+        train_indices = indices[n_val + n_test:]
+
+        self.train_data = [all_data[i] for i in train_indices]
+
+        # For val/test: create edge splits per graph for link prediction
+        self.val_data = self._prepare_eval_graphs([all_data[i] for i in val_indices])
+        self.test_data = self._prepare_eval_graphs([all_data[i] for i in test_indices])
+
+        print(f"Dataset split: {len(self.train_data)} train, "
+              f"{len(self.val_data)} val, {len(self.test_data)} test")
+
+    @staticmethod
+    def _prepare_eval_graphs(graphs: list[Data]) -> list[Data]:
+        """Add pos/neg edge labels for link prediction evaluation."""
+        eval_data = []
+        for data in graphs:
+            try:
+                split = DataUtil.train_test_split_edges(
+                    data.edge_index, num_node=data.x.size(0),
+                    val_ratio=0.0, test_ratio=0.5,
+                )
+                eval_graph = Data(
+                    x=data.x,
+                    edge_index=split["pos"]["train"],
+                    pos_edge_label_index=split["pos"]["test"],
+                    neg_edge_label_index=split["neg"]["test"],
+                )
+                eval_data.append(eval_graph)
+            except Exception:
+                # Skip graphs where edge splitting fails (too few edges)
+                continue
+        return eval_data
 
     def train_dataloader(self):
-        return PyGDataLoader([self.train_data], batch_size=1, shuffle=False)
+        return PyGDataLoader(
+            self.train_data, batch_size=self.batch_size,
+            shuffle=True, num_workers=self.num_workers,
+        )
 
     def val_dataloader(self):
         return [
-            PyGDataLoader([self.val_data], batch_size=1, shuffle=False),
-            PyGDataLoader([self.test_data], batch_size=1, shuffle=False),
+            PyGDataLoader(
+                self.val_data, batch_size=self.batch_size,
+                shuffle=False, num_workers=self.num_workers,
+            ),
+            PyGDataLoader(
+                self.test_data, batch_size=self.batch_size,
+                shuffle=False, num_workers=self.num_workers,
+            ),
         ]
 
 
@@ -228,37 +292,40 @@ def main():
     set_random_seed(cfg.train.seed)
 
     # ------------------------------------------------------------------
-    # 1. Load shapegraph
+    # 1. Load ALL shapegraphs
     # ------------------------------------------------------------------
     print(f"Loading shapegraphs from {cfg.data.pickle_path} ...")
     with open(cfg.data.pickle_path, "rb") as f:
         all_games = pickle.load(f)
 
-    game = all_games[cfg.data.game_index]
-    frame_keys = sorted(game.keys())
-    frame_key = frame_keys[cfg.data.frame_index]
     graph_type = cfg.data.get("graph_type", "original")
-    G: nx.Graph = game[frame_key][graph_type]
+    print(f"Using graph type: {graph_type}")
+    print(f"Found {len(all_games)} games")
 
-    print(f"Game {cfg.data.game_index}, frame {frame_key} ({graph_type}): "
-          f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    # Build role vocabulary across ALL games
+    print("Building role vocabulary ...")
+    role_vocab = build_role_vocab(all_games, graph_type)
+    print(f"Role vocabulary ({len(role_vocab)} roles): {role_vocab}")
+
+    # Convert all graphs to PyG
+    all_data = load_all_shapegraphs(all_games, cfg, role_vocab)
+
+    # Free memory — we no longer need the raw NetworkX graphs
+    del all_games
 
     # ------------------------------------------------------------------
-    # 2. Convert to PyG
+    # 2. DataModule
     # ------------------------------------------------------------------
-    data = shapegraph_to_pyg(G, cfg)
-    print(f"PyG Data: x={list(data.x.shape)}, edge_index={list(data.edge_index.shape)}")
+    dm = ShapegraphDataModule(all_data, cfg)
+    num_features = all_data[0].x.size(1)
 
-    dm = ShapegraphDataModule(
-        data,
-        val_ratio=cfg.train.get("val_ratio", 0.05),
-        test_ratio=cfg.train.get("test_ratio", 0.10),
-    )
+    # Free the full list (DataModule holds its own refs)
+    del all_data
 
     # ------------------------------------------------------------------
     # 3. Build model
     # ------------------------------------------------------------------
-    dataset_stub = _DatasetStub(num_features=data.x.size(1))
+    dataset_stub = _DatasetStub(num_features=num_features)
     hqa_gae_model = create_gae(cfg, dataset_stub)
 
     lightning_model = GAE(
@@ -290,7 +357,7 @@ def main():
         dirpath=run_dir,
         filename="epoch_{epoch:04d}",
         every_n_epochs=cfg.train.get("checkpoint_every", 100),
-        save_top_k=-1,      # save all
+        save_top_k=-1,
         save_last=True,
     )
     callbacks.append(ckpt_callback)
@@ -330,7 +397,7 @@ def main():
         logger=logger if logger else True,
         log_every_n_steps=cfg.train.get("log_interval", 10),
         enable_model_summary=True,
-        check_val_every_n_epoch=cfg.train.get("log_interval", 10),
+        check_val_every_n_epoch=cfg.train.get("val_every_n_epoch", 5),
         default_root_dir=run_dir,
     )
 
@@ -343,6 +410,11 @@ def main():
     print(f"{'='*60}\n")
 
     trainer.fit(lightning_model, datamodule=dm)
+
+    # Cleanly finish wandb to avoid socket errors on Kaggle
+    if cfg.wandb.get("enabled", False):
+        import wandb
+        wandb.finish()
 
     print(f"\nTraining complete. Outputs saved to {run_dir}/")
 

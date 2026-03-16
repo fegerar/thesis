@@ -4,14 +4,11 @@
 
 # ---------- Data ----------
 data:
-  pickle_path: "/kaggle/working/shapegraphs.pkl"          # path to the shapegraphs pickle
-  game_index: 0                            # which game (0-6)
-  frame_index: 0                           # which frame within the game (by sorted order)
+  pickle_path: "/kaggle/working/shapegraphs.pkl"
   graph_type: "original"                   # "original" or "nominal"
 
 # ---------- Node Features ----------
 # Which node attributes to use as input features.
-# Available: team (one-hot 2d), has_ball (1d), inferred_role (one-hot)
 # x and y coordinates are NOT used.
 node_features:
   use_team: true            # one-hot [home=1,0  away=0,1]   → 2 dims
@@ -62,21 +59,24 @@ scheduler:
 
 # ---------- Training ----------
 train:
-  epochs: 1000
-  device: "cuda"                     # "cuda" or "cpu"
+  epochs: 100
+  device: "cuda"
   seed: 42
-  val_ratio: 0.05                    # fraction of edges for validation
-  test_ratio: 0.10                   # fraction of edges for test
-  checkpoint_every: 100              # save checkpoint every N epochs
-  log_interval: 10                   # log metrics every N epochs
+  batch_size: 64                     # graphs per batch
+  num_workers: 2                     # dataloader workers
+  val_ratio: 0.05                    # fraction of graphs for validation
+  test_ratio: 0.10                   # fraction of graphs for test
+  val_every_n_epoch: 5               # run validation every N epochs
+  checkpoint_every: 10               # save checkpoint every N epochs
+  log_interval: 10                   # log metrics every N steps
 
 # ---------- Wandb ----------
 wandb:
   enabled: true
   project: "hqa-gae-shapegraphs"
-  entity: null                       # null → default entity
-  run_name: null                     # null → auto-generated
+  entity: null
+  run_name: null
 
 # ---------- Output ----------
 output:
-  checkpoint_dir: "checkpoints"      # base dir; each run gets a subdirectory
+  checkpoint_dir: "checkpoints"
