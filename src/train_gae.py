@@ -264,7 +264,7 @@ def main():
     lightning_model = GAE(
         model=hqa_gae_model,
         optimizer=cfg.optimizer,
-        scheduler=cfg.get("scheduler", None),
+        scheduler=getattr(cfg, "scheduler", None),
     )
 
     # ------------------------------------------------------------------
