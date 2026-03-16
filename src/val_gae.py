@@ -84,9 +84,20 @@ def main():
     # ------------------------------------------------------------------
     print(f"\nLoading model weights from {ckpt_path} ...")
     
-    # We load strictly the LightningModule state.
-    # The GAE wrapper handles the inner HQA_GAE architecture magically.
-    model = GAE.load_from_checkpoint(ckpt_path)
+    # We must instantiate the inner HQA-GAE architecture first based on config
+    from train_gae import _DatasetStub
+    from hqa_gae.models import create_gae
+    
+    dataset_stub = _DatasetStub(num_features=dm.train_data[0].x.size(1))
+    hqa_gae_model = create_gae(cfg, dataset_stub)
+
+    # Now load the Lightning module weights and inject the instantiated architecture
+    model = GAE.load_from_checkpoint(
+        ckpt_path, 
+        model=hqa_gae_model, 
+        optimizer=cfg.optimizer, 
+        scheduler=getattr(cfg, "scheduler", None)
+    )
     model.eval()
 
     # ------------------------------------------------------------------
