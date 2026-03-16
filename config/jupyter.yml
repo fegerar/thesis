@@ -1,0 +1,82 @@
+# ============================================================
+# HQA-GAE Training Configuration for Shapegraphs
+# ============================================================
+
+# ---------- Data ----------
+data:
+  pickle_path: "shapegraphs.pkl"
+  graph_type: "original"                   # "original" or "nominal"
+
+# ---------- Node Features ----------
+# Which node attributes to use as input features.
+# x and y coordinates are NOT used.
+node_features:
+  use_team: true            # one-hot [home=1,0  away=0,1]   → 2 dims
+  use_has_ball: true        # binary                         → 1 dim
+  use_inferred_role: true   # one-hot over all unique roles  → R dims
+  use_shirt: false          # normalized shirt number        → 1 dim
+
+# ---------- Model ----------
+vq_type: 1
+q1_size: 64
+q2_size: 32
+t0: 0.1
+temp_decay: 0.0
+alpha: 1.0
+beta: 0.1
+lambda_: 2
+drop_edge_rate: 0.0
+
+gnn:
+  node_encoder: "gcn"
+  hidden_dim: 128
+  output_dim: 64
+  num_layers: 2
+  dropout: 0.3
+  bn: false
+  activation: "elu"
+  heads: 4
+  out_heads: 1
+  dec_heads: 4
+  dec_dropout: 0.3
+
+mlp:
+  hidden_dim: 64
+  num_layers: 2
+  dropout: 0.3
+  activation: "relu"
+
+# ---------- Optimizer ----------
+optimizer:
+  type: "adam"
+  lr: 0.001
+  weight_decay: 0.00005
+
+scheduler:
+  type: "cos"
+  opt_restart: 2000
+  warmup: null
+
+# ---------- Training ----------
+train:
+  epochs: 100
+  device: "cuda"
+  seed: 42
+  batch_size: 64                     # graphs per batch
+  num_workers: 2                     # dataloader workers
+  val_ratio: 0.05                    # fraction of graphs for validation
+  test_ratio: 0.10                   # fraction of graphs for test
+  val_every_n_epoch: 5               # run validation every N epochs
+  checkpoint_every: 10               # save checkpoint every N epochs
+  log_interval: 10                   # log metrics every N steps
+
+# ---------- Wandb ----------
+wandb:
+  enabled: true
+  project: "hqa-gae-shapegraphs"
+  entity: null
+  run_name: null
+
+# ---------- Output ----------
+output:
+  checkpoint_dir: "checkpoints"
