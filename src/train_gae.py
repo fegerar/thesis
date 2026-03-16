@@ -260,6 +260,7 @@ class ShapegraphDataModule(pl.LightningDataModule):
                     edge_index=split["pos"]["train"],
                     pos_edge_label_index=split["pos"]["test"],
                     neg_edge_label_index=split["neg"]["test"],
+                    y=getattr(data, "y", None),
                 )
                 eval_data.append(eval_graph)
             except Exception as e:
