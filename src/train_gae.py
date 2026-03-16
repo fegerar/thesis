@@ -126,7 +126,14 @@ def shapegraph_to_pyg(G: nx.Graph, cfg, role_vocab: list[str]) -> Data:
         return None
 
     edge_index = torch.tensor([src, dst], dtype=torch.long)
-    data = Data(x=x_tensor, edge_index=edge_index)
+    
+    # --- Build label tensor (y) for node classification ---
+    # We use inferred_role as the classification target
+    role2idx = {r: j for j, r in enumerate(role_vocab)}
+    y_list = [role2idx.get(d.get("inferred_role", "?"), 0) for _, d in nodes]
+    y_tensor = torch.tensor(y_list, dtype=torch.long)
+
+    data = Data(x=x_tensor, edge_index=edge_index, y=y_tensor)
     return data
 
 
@@ -242,9 +249,11 @@ class ShapegraphDataModule(pl.LightningDataModule):
         eval_data = []
         for data in graphs:
             try:
+                # We must use non-zero val_ratio because PyG's negative_sampling
+                # crashes if num_neg_samples=0.
                 split = DataUtil.train_test_split_edges(
                     data.edge_index, num_node=data.x.size(0),
-                    val_ratio=0.0, test_ratio=0.5,
+                    val_ratio=0.05, test_ratio=0.15,
                 )
                 eval_graph = Data(
                     x=data.x,
@@ -253,7 +262,7 @@ class ShapegraphDataModule(pl.LightningDataModule):
                     neg_edge_label_index=split["neg"]["test"],
                 )
                 eval_data.append(eval_graph)
-            except Exception:
+            except Exception as e:
                 # Skip graphs where edge splitting fails (too few edges)
                 continue
         return eval_data

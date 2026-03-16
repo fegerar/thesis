@@ -66,6 +66,18 @@ class GAE(pl.LightningModule):
                                         pos_edges=pos_edges, neg_edges=neg_edges,
                                         batch_size=65536)
         
+        if hasattr(batch, 'y') and batch.y is not None:
+            from hqa_gae.utils.test import test_svm_classify
+            import warnings
+            from sklearn.exceptions import UndefinedMetricWarning
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UndefinedMetricWarning)
+                # just_one_fold=True speeds up validation by only doing a single SVM split
+                svm_result = test_svm_classify(emb, batch.y, using_cuml=False, just_one_fold=True)
+            lp_result["node_acc"] = svm_result["acc"][0]
+            lp_result["node_f1_mic"] = svm_result["f1_mic"][0]
+            lp_result["node_f1_mac"] = svm_result["f1_mac"][0]
+
         if lp_result["AUC"] >= self.best_score:
             self.best_score = lp_result["AUC"]
             self.best_model = copy.deepcopy(self.model)
