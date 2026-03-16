@@ -131,8 +131,9 @@ def shapegraph_to_pyg(G: nx.Graph, cfg, role_vocab: list[str]) -> Data:
 
 
 def load_all_shapegraphs(all_games, cfg, role_vocab: list[str]) -> list[Data]:
-    """Convert ALL shapegraphs from ALL games into PyG Data objects."""
+    """Convert ALL shapegraphs from ALL games into PyG Data objects and move to device."""
     graph_type = cfg.data.get("graph_type", "original")
+    device = torch.device(cfg.train.get("device", "cuda"))
     all_data = []
 
     total_frames = sum(len(game) for game in all_games)
@@ -146,6 +147,8 @@ def load_all_shapegraphs(all_games, cfg, role_vocab: list[str]) -> list[Data]:
             G = entry[graph_type]
             data = shapegraph_to_pyg(G, cfg, role_vocab)
             if data is not None:
+                # Pre-load entirely into VRAM!
+                data = data.to(device)
                 all_data.append(data)
 
     print(f"Converted {len(all_data)} valid shapegraphs (skipped {total_frames - len(all_data)})")
@@ -202,7 +205,10 @@ class ShapegraphDataModule(pl.LightningDataModule):
         val_ratio = cfg.train.get("val_ratio", 0.05)
         test_ratio = cfg.train.get("test_ratio", 0.10)
         batch_size = cfg.train.get("batch_size", 64)
-        num_workers = cfg.train.get("num_workers", 0)
+        
+        # When tensors are already in CUDA memory, PyTorch strict multiprocessing
+        # fails if you use num_workers > 0.
+        num_workers = 0 
 
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -251,18 +257,18 @@ class ShapegraphDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return PyGDataLoader(
             self.train_data, batch_size=self.batch_size,
-            shuffle=True, num_workers=self.num_workers,
+            shuffle=True, num_workers=self.num_workers
         )
 
     def val_dataloader(self):
         return [
             PyGDataLoader(
                 self.val_data, batch_size=self.batch_size,
-                shuffle=False, num_workers=self.num_workers,
+                shuffle=False, num_workers=self.num_workers
             ),
             PyGDataLoader(
                 self.test_data, batch_size=self.batch_size,
-                shuffle=False, num_workers=self.num_workers,
+                shuffle=False, num_workers=self.num_workers
             ),
         ]
 
