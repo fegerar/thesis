@@ -2,7 +2,7 @@
 VQ-VAE model components for shapegraph tokenization.
 
 Components:
-    - ShapegraphEncoder: GAT-based graph encoder -> fixed-size embedding
+    - ShapegraphEncoder: GAT-based graph encoder -> fixed-size embedding (CLS token pooling)
     - VectorQuantizer: discrete bottleneck with EMA or gradient-based codebook updates
     - ShapegraphDecoder: cross-attention decoder -> reconstructed node features + adjacency
     - VQVAE: full pipeline combining encoder, quantizer, decoder
@@ -11,14 +11,19 @@ Components:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, global_mean_pool
+from torch_geometric.nn import GATConv
 
 
 class ShapegraphEncoder(nn.Module):
     def __init__(self, node_dim: int, hidden_dim: int, embed_dim: int,
                  num_layers: int = 3, heads: int = 4, dropout: float = 0.1):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.input_proj = nn.Linear(node_dim, hidden_dim)
+
+        # Learnable CLS token — one vector shared across all graphs, broadcast per batch
+        self.cls_token = nn.Parameter(torch.randn(1, hidden_dim))
+
         self.gat_layers = nn.ModuleList([
             GATConv(hidden_dim, hidden_dim // heads, heads=heads,
                     concat=True, dropout=dropout)
@@ -30,11 +35,55 @@ class ShapegraphEncoder(nn.Module):
         self.output_proj = nn.Linear(hidden_dim, embed_dim)
 
     def forward(self, x, edge_index, batch):
-        h = self.input_proj(x)
+        """
+        Args:
+            x:          (N_total, node_dim)   — all nodes across batch
+            edge_index: (2, E_total)           — all edges across batch
+            batch:      (N_total,)             — graph index per node
+
+        Returns:
+            z_e: (B, embed_dim)
+        """
+        B = int(batch.max().item()) + 1
+        device = x.device
+
+        # Project input nodes to hidden_dim
+        h = self.input_proj(x)  # (N_total, hidden_dim)
+
+        # --- Prepend one CLS node per graph ---
+        # CLS embeddings: one per graph in the batch
+        cls_tokens = self.cls_token.expand(B, -1)  # (B, hidden_dim)
+
+        # New node tensor: [cls_0, cls_1, ..., cls_{B-1}, node_0, node_1, ...]
+        h = torch.cat([cls_tokens, h], dim=0)  # (B + N_total, hidden_dim)
+
+        # Update batch vector: CLS nodes belong to graphs 0..B-1
+        cls_batch = torch.arange(B, device=device)          # (B,)
+        batch_new = torch.cat([cls_batch, batch], dim=0)    # (B + N_total,)
+
+        # Update edge_index: original node indices shift by B
+        edge_index_shifted = edge_index + B  # (2, E_total)
+
+        # Connect each CLS node bidirectionally to all nodes in its graph
+        # For graph g, CLS index = g; node indices in new tensor = B + (positions where batch==g)
+        node_indices = torch.arange(len(batch), device=device) + B  # original nodes, shifted
+        cls_indices = batch  # for node i, its graph's CLS token is at index batch[i]
+
+        # Edges: CLS -> node and node -> CLS for every node
+        cls_to_node = torch.stack([cls_indices, node_indices], dim=0)   # (2, N_total)
+        node_to_cls = torch.stack([node_indices, cls_indices], dim=0)   # (2, N_total)
+        cls_edges = torch.cat([cls_to_node, node_to_cls], dim=1)        # (2, 2*N_total)
+
+        edge_index_new = torch.cat([edge_index_shifted, cls_edges], dim=1)  # (2, E_total + 2*N_total)
+
+        # --- GAT layers ---
         for gat, norm in zip(self.gat_layers, self.norm_layers):
-            h = norm(h + gat(h, edge_index))
-        z_e = global_mean_pool(h, batch)
-        return self.output_proj(z_e)
+            h = norm(h + gat(h, edge_index_new))
+
+        # --- Extract CLS token for each graph (indices 0..B-1) ---
+        cls_out = h[:B]                      # (B, hidden_dim)
+        z_e = self.output_proj(cls_out)      # (B, embed_dim)
+        return z_e
 
 
 class VectorQuantizer(nn.Module):
@@ -76,12 +125,12 @@ class VectorQuantizer(nn.Module):
 
         # Losses
         if self.use_ema:
-            # Con EMA il codebook si aggiorna fuori dal grafo computazionale.
-            # L'unico termine di loss è il commitment: spinge z_e verso sg(z_q)
+            # With EMA the codebook updates outside the compute graph.
+            # Only the commitment loss is needed: push z_e toward sg(z_q)
             commitment_loss = F.mse_loss(z_e, z_q.detach())
             vq_loss = self.beta * commitment_loss
         else:
-            # Senza EMA servono entrambi i termini
+            # Without EMA both terms are needed
             codebook_loss = F.mse_loss(z_q, z_e.detach())
             commitment_loss = F.mse_loss(z_e, z_q.detach())
             vq_loss = codebook_loss + self.beta * commitment_loss
@@ -116,7 +165,6 @@ class VectorQuantizer(nn.Module):
             dead = usage < self.restart_threshold
             n_dead = dead.sum().item()
             if n_dead > 0:
-                # Sample from encoder outputs to reinitialize
                 idx = torch.randint(0, z_e.size(0), (n_dead,), device=z_e.device)
                 self.codebook.weight.data[dead] = z_e[idx].detach()
                 self.ema_cluster_size[dead] = 1.0
@@ -172,7 +220,7 @@ class ShapegraphDecoder(nn.Module):
         N = self.num_roles
         h_i = h.unsqueeze(2).expand(-1, -1, N, -1)
         h_j = h.unsqueeze(1).expand(-1, N, -1, -1)
-        pair = torch.cat([h_i, h_j], dim=-1)        # (B, N, N, 2D)
+        pair = torch.cat([h_i, h_j], dim=-1)          # (B, N, N, 2D)
         adj_logits = self.edge_head(pair).squeeze(-1)  # (B, N, N)
 
         return node_feats, adj_logits
