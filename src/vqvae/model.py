@@ -75,9 +75,16 @@ class VectorQuantizer(nn.Module):
         z_q_st = z_e + (z_q - z_e).detach()
 
         # Losses
-        codebook_loss = F.mse_loss(z_q.detach(), z_e)
-        commitment_loss = F.mse_loss(z_e.detach(), z_q)
-        vq_loss = codebook_loss + self.beta * commitment_loss
+        if self.use_ema:
+            # Con EMA il codebook si aggiorna fuori dal grafo computazionale.
+            # L'unico termine di loss è il commitment: spinge z_e verso sg(z_q)
+            commitment_loss = F.mse_loss(z_e, z_q.detach())
+            vq_loss = self.beta * commitment_loss
+        else:
+            # Senza EMA servono entrambi i termini
+            codebook_loss = F.mse_loss(z_q, z_e.detach())
+            commitment_loss = F.mse_loss(z_e, z_q.detach())
+            vq_loss = codebook_loss + self.beta * commitment_loss
 
         # Codebook utilization
         unique_codes = k.unique().numel()
