@@ -3,6 +3,12 @@ Dataset and dataloader utilities for shapegraph VQ-VAE training.
 
 Loads shapegraphs from pickle, converts to PyG Data objects, and builds
 train/val/test dataloaders.
+
+Pickle format: list[dict[int, nx.Graph]]
+  - Each entry is a game (dict mapping frame_number -> shapegraph)
+  - Node attrs: x, y, team ("home"/"away"), inferred_role (str),
+                has_ball (bool), shirt, name, index
+  - Edge attrs: distance, cross_team
 """
 
 import pickle
@@ -12,17 +18,21 @@ import torch
 import networkx as nx
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
-from torch_geometric.utils import from_networkx
+
+
+# Collect all unique roles across the dataset for one-hot encoding
+def build_role_vocab(games: list[dict]) -> dict[str, int]:
+    """Scan all graphs to build a role -> index mapping."""
+    roles = set()
+    for game in games:
+        for G in game.values():
+            for _, attrs in G.nodes(data=True):
+                roles.add(attrs.get("inferred_role", "?"))
+    roles = sorted(roles)
+    return {r: i for i, r in enumerate(roles)}
 
 
 class ShapegraphDataset(Dataset):
-    """PyG dataset wrapping shapegraphs loaded from a pickle file.
-
-    Each item is a PyG Data object with:
-        - x: node features [N, F]
-        - edge_index: graph edges [2, E]
-    """
-
     def __init__(self, graphs: list[Data]):
         super().__init__()
         self._graphs = graphs
@@ -34,33 +44,37 @@ class ShapegraphDataset(Dataset):
         return self._graphs[idx]
 
 
-def nx_to_pyg(G: nx.Graph) -> Data | None:
+def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int]) -> Data | None:
     """Convert a NetworkX shapegraph to a PyG Data object.
 
-    Extracts node features: x, y, vx, vy, team, has_ball.
-    Returns None if the graph has no nodes.
+    Node features: [x, y, team_binary, has_ball_binary, role_one_hot...]
     """
     if G.number_of_nodes() == 0:
         return None
 
+    num_roles = len(role_vocab)
     node_attrs = []
     for _, attrs in G.nodes(data=True):
-        feats = [
-            attrs.get("x", 0.0),
-            attrs.get("y", 0.0),
-            attrs.get("vx", 0.0),
-            attrs.get("vy", 0.0),
-            float(attrs.get("team", 0)),
-            float(attrs.get("has_ball", 0)),
-        ]
-        node_attrs.append(feats)
+        # Continuous: position
+        px = float(attrs.get("x", 0.0))
+        py = float(attrs.get("y", 0.0))
+        # Binary: team (home=0, away=1)
+        team = 1.0 if attrs.get("team", "") == "away" else 0.0
+        # Binary: has_ball
+        has_ball = 1.0 if attrs.get("has_ball", False) else 0.0
+        # One-hot: inferred role
+        role = attrs.get("inferred_role", "?")
+        role_oh = [0.0] * num_roles
+        if role in role_vocab:
+            role_oh[role_vocab[role]] = 1.0
+
+        node_attrs.append([px, py, team, has_ball] + role_oh)
 
     x = torch.tensor(node_attrs, dtype=torch.float)
 
     # Build edge_index
     edges = list(G.edges())
     if len(edges) > 0:
-        # Map node IDs to consecutive indices
         node_ids = list(G.nodes())
         node_map = {nid: i for i, nid in enumerate(node_ids)}
         src = [node_map[e[0]] for e in edges]
@@ -75,18 +89,29 @@ def nx_to_pyg(G: nx.Graph) -> Data | None:
     return Data(x=x, edge_index=edge_index)
 
 
-def load_shapegraphs(path: str | Path) -> list[Data]:
-    """Load shapegraphs.pkl and convert all frames to PyG Data objects."""
+def load_shapegraphs(path: str | Path) -> tuple[list[Data], int]:
+    """Load shapegraphs.pkl and convert all frames to PyG Data objects.
+
+    Returns (data_list, node_dim).
+    """
     with open(path, "rb") as f:
         games = pickle.load(f)
 
+    role_vocab = build_role_vocab(games)
+    print(f"Role vocabulary ({len(role_vocab)} roles): {list(role_vocab.keys())}")
+
     data_list = []
     for game in games:
-        for G in game:
-            data = nx_to_pyg(G)
+        for frame_num, G in game.items():
+            if not isinstance(G, nx.Graph):
+                continue
+            data = nx_to_pyg(G, role_vocab)
             if data is not None:
                 data_list.append(data)
-    return data_list
+
+    # node_dim = 4 (x, y, team, has_ball) + num_roles
+    node_dim = 4 + len(role_vocab)
+    return data_list, node_dim
 
 
 def build_dataloaders(
@@ -96,9 +121,12 @@ def build_dataloaders(
     val_ratio: float = 0.1,
     num_workers: int = 4,
     seed: int = 42,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
-    """Build train/val/test dataloaders from shapegraphs.pkl."""
-    all_data = load_shapegraphs(data_path)
+) -> tuple[DataLoader, DataLoader, DataLoader, int]:
+    """Build train/val/test dataloaders from shapegraphs.pkl.
+
+    Returns (train_loader, val_loader, test_loader, node_dim).
+    """
+    all_data, node_dim = load_shapegraphs(data_path)
     n = len(all_data)
 
     generator = torch.Generator().manual_seed(seed)
@@ -128,4 +156,4 @@ def build_dataloaders(
         num_workers=num_workers, persistent_workers=num_workers > 0,
     )
 
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader, node_dim

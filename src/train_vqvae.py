@@ -32,7 +32,7 @@ def main():
 
     # Build dataloaders
     data_cfg = cfg["data"]
-    train_loader, val_loader, test_loader = build_dataloaders(
+    train_loader, val_loader, test_loader, node_dim = build_dataloaders(
         data_path=data_cfg["path"],
         batch_size=cfg["training"]["batch_size"],
         train_ratio=data_cfg["train_ratio"],
@@ -41,9 +41,6 @@ def main():
         seed=data_cfg["seed"],
     )
 
-    # Infer node feature dimension from first batch
-    sample = next(iter(train_loader))
-    node_dim = sample.x.size(1)
     print(f"Node feature dim: {node_dim}")
     print(f"Train: {len(train_loader.dataset)} | Val: {len(val_loader.dataset)} | Test: {len(test_loader.dataset)}")
 

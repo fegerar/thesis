@@ -82,15 +82,15 @@ class VQVAELightningModule(L.LightningModule):
             adj_target = adj_gt[:, :N_roles, :N_roles]
 
         # Node reconstruction loss (only on valid nodes)
-        # Continuous features: x, y, vx, vy (indices 0-3)
-        pos_pred = node_feats[..., :4]
-        pos_gt = x_target[..., :4]
+        # Continuous features: x, y (indices 0-1)
+        pos_pred = node_feats[..., :2]
+        pos_gt = x_target[..., :2]
         pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
-        pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 4
+        pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
 
-        # Binary features: team, has_ball (indices 4-5)
-        flag_pred = node_feats[..., 4:].sigmoid()
-        flag_gt = x_target[..., 4:]
+        # Binary/categorical features: team, has_ball, role_one_hot (indices 2+)
+        flag_pred = node_feats[..., 2:].sigmoid()
+        flag_gt = x_target[..., 2:]
         flag_diff = F.binary_cross_entropy(flag_pred, flag_gt, reduction="none")
         flag_loss = (flag_diff * node_mask.unsqueeze(-1)).sum() / node_mask.sum().clamp(min=1) / flag_diff.size(-1)
 
