@@ -41,9 +41,6 @@ def main():
         seed=data_cfg["seed"],
     )
 
-    print(f"Node feature dim: {node_dim}")
-    print(f"Train: {len(train_loader.dataset)} | Val: {len(val_loader.dataset)} | Test: {len(test_loader.dataset)}")
-
     # Build model
     model = VQVAELightningModule(
         model_cfg=cfg["model"],
@@ -108,6 +105,7 @@ def main():
         deterministic=True,
         accelerator="auto",
         devices="auto",
+        enable_progress_bar=False,
     )
 
     trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume)
