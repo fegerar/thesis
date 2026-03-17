@@ -4,8 +4,9 @@ Dataset and dataloader utilities for shapegraph VQ-VAE training.
 Loads shapegraphs from pickle, converts to PyG Data objects, and builds
 train/val/test dataloaders.
 
-Pickle format: list[dict[int, nx.Graph]]
-  - Each entry is a game (dict mapping frame_number -> shapegraph)
+Pickle format: list[dict[int, {"original": nx.Graph, "nominal": nx.Graph}]]
+  - Each entry is a game (dict mapping frame_number -> pair of shapegraphs)
+  - We use the "original" graph (actual player positions)
   - Node attrs: x, y, team ("home"/"away"), inferred_role (str),
                 has_ball (bool), shirt, name, index
   - Edge attrs: distance, cross_team
@@ -25,7 +26,8 @@ def build_role_vocab(games: list[dict]) -> dict[str, int]:
     """Scan all graphs to build a role -> index mapping."""
     roles = set()
     for game in games:
-        for G in game.values():
+        for frame_data in game.values():
+            G = frame_data["original"]
             for _, attrs in G.nodes(data=True):
                 roles.add(attrs.get("inferred_role", "?"))
     roles = sorted(roles)
@@ -102,9 +104,8 @@ def load_shapegraphs(path: str | Path) -> tuple[list[Data], int]:
 
     data_list = []
     for game in games:
-        for frame_num, G in game.items():
-            if not isinstance(G, nx.Graph):
-                continue
+        for frame_data in game.values():
+            G = frame_data["original"]
             data = nx_to_pyg(G, role_vocab)
             if data is not None:
                 data_list.append(data)
