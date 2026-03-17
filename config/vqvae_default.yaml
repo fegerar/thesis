@@ -1,0 +1,68 @@
+# VQ-VAE Default Configuration
+# Copy this file and modify to try different hyperparameter settings.
+# Usage: python src/train_vqvae.py --config config/vqvae_default.yaml
+
+# --- Data ---
+data:
+  path: "shapegraphs.pkl"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  num_workers: 4
+  seed: 42
+
+# --- Model ---
+model:
+  # Encoder
+  encoder:
+    hidden_dim: 128
+    embed_dim: 64
+    num_layers: 3
+    heads: 4
+    dropout: 0.1
+
+  # Vector Quantizer
+  quantizer:
+    num_embeddings: 512     # codebook size K
+    commitment_cost: 0.25   # beta
+    use_ema: true           # use EMA updates (more stable)
+    ema_decay: 0.99
+    codebook_restart_threshold: 1.0  # restart entries used fewer than this many times per epoch
+
+  # Decoder
+  decoder:
+    num_roles: 22           # fixed output slots (22 outfield players)
+    hidden_dim: 128
+    num_cross_attn_heads: 4
+
+# --- Loss ---
+loss:
+  lambda_node: 1.0
+  lambda_edge: 2.0
+  lambda_pos: 1.0
+  lambda_flag: 1.0
+
+# --- Training ---
+training:
+  batch_size: 256
+  max_epochs: 200
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-5
+  lr_scheduler: "cosine"       # cosine | step | none
+  warmup_epochs: 5
+  gradient_clip_val: 1.0
+
+# --- Logging ---
+logging:
+  project_name: "vqvae-shapegraph"
+  run_name: null               # auto-generated if null
+  log_every_n_steps: 50
+  csv_dir: "logs/vqvae"
+
+# --- Checkpointing ---
+checkpointing:
+  dir: "checkpoints/vqvae"
+  save_top_k: 3               # keep top-k best checkpoints by val_loss
+  save_every_n_epochs: 10     # also save periodic checkpoints
+  monitor: "val/loss"
+  mode: "min"

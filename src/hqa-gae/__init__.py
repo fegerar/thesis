@@ -1,1 +1,0 @@
-# HQA-GAE package root
