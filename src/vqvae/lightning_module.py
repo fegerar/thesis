@@ -139,10 +139,16 @@ class VQVAELightningModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            self.log(f"val/{k}", v, on_epoch=True, prog_bar=(k == "loss"),
-                     batch_size=batch.num_graphs)
+            self.log(f"val/{k}", v, on_step=False, on_epoch=True,
+                     prog_bar=False, batch_size=batch.num_graphs)
             self._accumulate(f"val/{k}", v.item() if isinstance(v, torch.Tensor) else v)
         return loss
+
+    def on_validation_epoch_end(self):
+        # Log val/loss to prog_bar once at epoch end
+        val_loss = self.trainer.callback_metrics.get("val/loss")
+        if val_loss is not None:
+            self.log("val_loss", val_loss, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
