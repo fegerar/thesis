@@ -1,0 +1,23 @@
+# K-means++ Default Configuration
+# Usage: python src/run_kmeans.py --config config/kmeans_default.yaml
+
+# --- Data ---
+data:
+  path: "shapegraphs.pkl"
+  max_nodes: 22         # pad/truncate graphs to this many nodes
+  seed: 42
+
+# --- Clustering ---
+clustering:
+  n_clusters: 512       # codebook size K (same as VQ-VAE default)
+  n_init: 10            # number of k-means++ initializations (best is kept)
+  max_iter: 300         # max iterations per run
+  normalize: true       # standardize features before clustering
+
+# --- Evaluation ---
+evaluation:
+  silhouette_sample_size: 50000   # subsample for silhouette score (expensive)
+
+# --- Output ---
+output:
+  dir: "results/kmeans"

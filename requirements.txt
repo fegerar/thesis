@@ -1,5 +1,6 @@
 networkx
 scipy
+scikit-learn
 tqdm
 matplotlib
 git+https://github.com/fegerar/shapegraphs.git
