@@ -127,7 +127,8 @@ class VQVAELightningModule(L.LightningModule):
 
         # Restart unused codes periodically
         if self.model.quantizer.use_ema and batch_idx % 100 == 0:
-            z_e = self.model.encoder(batch.x, batch.edge_index, batch.batch)
+            with torch.no_grad():
+                z_e = self.model.encoder(batch.x, batch.edge_index, batch.batch)
             n_restarted = self.model.quantizer.restart_unused_codes(z_e)
             if n_restarted > 0:
                 self.log("train/codes_restarted", float(n_restarted),
