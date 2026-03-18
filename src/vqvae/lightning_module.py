@@ -89,15 +89,14 @@ class VQVAELightningModule(L.LightningModule):
         pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
 
         # Binary/categorical features: team, has_ball, role_one_hot (indices 2+)
-        flag_pred = node_feats[..., 2:].sigmoid()
+        flag_logits = node_feats[..., 2:]
         flag_gt = x_target[..., 2:]
-        flag_diff = F.binary_cross_entropy(flag_pred, flag_gt, reduction="none")
+        flag_diff = F.binary_cross_entropy_with_logits(flag_logits, flag_gt, reduction="none")
         flag_loss = (flag_diff * node_mask.unsqueeze(-1)).sum() / node_mask.sum().clamp(min=1) / flag_diff.size(-1)
 
         # Edge reconstruction loss (BCE with class imbalance weighting)
-        adj_pred = adj_logits.sigmoid()
         edge_weight = (1.0 - adj_target) * 0.1 + adj_target * 1.0
-        edge_loss_raw = F.binary_cross_entropy(adj_pred, adj_target, weight=edge_weight, reduction="none")
+        edge_loss_raw = F.binary_cross_entropy_with_logits(adj_logits, adj_target, weight=edge_weight, reduction="none")
 
         # Mask edges: only compute loss where both nodes exist
         edge_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1)  # (B, N, N)
