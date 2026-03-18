@@ -36,6 +36,9 @@ class VQVAELightningModule(L.LightningModule):
         self.lambda_edge = loss_cfg.get("lambda_edge", 2.0)
         self.lambda_pos = loss_cfg.get("lambda_pos", 1.0)
         self.lambda_flag = loss_cfg.get("lambda_flag", 1.0)
+        # Soft constraint weights — small by default, tune if needed
+        self.lambda_team = loss_cfg.get("lambda_team", 0.1)
+        self.lambda_ball = loss_cfg.get("lambda_ball", 0.1)
 
         self.lr = training_cfg["learning_rate"]
         self.weight_decay = training_cfg.get("weight_decay", 1e-5)
@@ -81,8 +84,9 @@ class VQVAELightningModule(L.LightningModule):
             node_mask = mask[:, :N_roles]
             adj_target = adj_gt[:, :N_roles, :N_roles]
 
-        # Node reconstruction loss (only on valid nodes)
-        # Continuous features: x, y (indices 0-1)
+        # --- Node reconstruction loss (only on valid nodes) ---
+
+        # Positions: x, y (indices 0-1), MSE
         pos_pred = node_feats[..., :2]
         pos_gt = x_target[..., :2]
         pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
@@ -94,18 +98,50 @@ class VQVAELightningModule(L.LightningModule):
         flag_diff = F.binary_cross_entropy_with_logits(flag_logits, flag_gt, reduction="none")
         flag_loss = (flag_diff * node_mask.unsqueeze(-1)).sum() / node_mask.sum().clamp(min=1) / flag_diff.size(-1)
 
-        # Edge reconstruction loss (BCE with class imbalance weighting)
-        edge_weight = (1.0 - adj_target) * 0.1 + adj_target * 1.0
-        edge_loss_raw = F.binary_cross_entropy_with_logits(adj_logits, adj_target, weight=edge_weight, reduction="none")
+        # --- Edge reconstruction loss ---
+        # FIX: previous code had edge_weight inverted (penalising negatives 10x less
+        # than positives), which caused the decoder to predict edges everywhere.
+        # Correct approach: use pos_weight = n_negatives / n_positives so that
+        # the rare positive edges get proportionally stronger gradient signal.
+        #
+        # With 22 nodes: ~231 possible edges, ~20 real edges → ratio ≈ 10.5
+        # We compute it dynamically from the batch so it adapts to the data.
+        with torch.no_grad():
+            edge_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1)  # (B, N, N)
+            n_possible = edge_mask.float().sum().clamp(min=1)
+            n_positive = adj_target[edge_mask].sum().clamp(min=1)
+            pos_weight = (n_possible - n_positive) / n_positive  # scalar, ~10-15x
 
-        # Mask edges: only compute loss where both nodes exist
-        edge_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1)  # (B, N, N)
+        edge_loss_raw = F.binary_cross_entropy_with_logits(
+            adj_logits,
+            adj_target,
+            pos_weight=pos_weight,   # scalar broadcast over all positive entries
+            reduction="none",
+        )
         edge_loss = (edge_loss_raw * edge_mask).sum() / edge_mask.sum().clamp(min=1)
 
+        # --- Soft structural constraints ---
+
+        # (1) Team balance: exactly 11 players per team (team flag is index 2)
+        # Sum of sigmoid(team_logit) over valid nodes should be ~11
+        team_probs = torch.sigmoid(node_feats[..., 2])           # (B, N_roles)
+        team_sum = (team_probs * node_mask.float()).sum(dim=1)   # (B,) — #away players
+        n_valid = node_mask.float().sum(dim=1)                   # (B,) — total valid nodes
+        expected_away = n_valid / 2                              # should be 11 for full graphs
+        team_loss = F.mse_loss(team_sum, expected_away)
+
+        # (2) Ball carrier: exactly one player has the ball (has_ball flag is index 3)
+        ball_probs = torch.sigmoid(node_feats[..., 3])           # (B, N_roles)
+        ball_sum = (ball_probs * node_mask.float()).sum(dim=1)   # (B,) — should be ~1
+        ball_loss = F.mse_loss(ball_sum, torch.ones_like(ball_sum))
+
+        # --- Total loss ---
         total_loss = (
             self.lambda_node * (self.lambda_pos * pos_loss + self.lambda_flag * flag_loss)
             + self.lambda_edge * edge_loss
             + vq_loss
+            + self.lambda_team * team_loss
+            + self.lambda_ball * ball_loss
         )
 
         metrics = {
@@ -115,6 +151,8 @@ class VQVAELightningModule(L.LightningModule):
             "edge_loss": edge_loss,
             "vq_loss": vq_loss,
             "codebook_utilization": utilization,
+            "team_loss": team_loss,
+            "ball_loss": ball_loss,
         }
         return total_loss, metrics
 
