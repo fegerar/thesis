@@ -160,10 +160,10 @@ class VQVAELightningModule(L.LightningModule):
     def training_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            v_log = v.detach() if isinstance(v, torch.Tensor) else v
-            self.log(f"train/{k}", v_log, on_step=True, on_epoch=False,
+            v_scalar = v.item() if isinstance(v, torch.Tensor) else v
+            self.log(f"train/{k}", v_scalar, on_step=True, on_epoch=False,
                      prog_bar=False, batch_size=batch.num_graphs)
-            self._accumulate(f"train/{k}", v.item() if isinstance(v, torch.Tensor) else v)
+            self._accumulate(f"train/{k}", v_scalar)
 
         # Restart unused codes periodically
         if self.model.quantizer.use_ema and batch_idx % 100 == 0:
@@ -179,17 +179,18 @@ class VQVAELightningModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            v_log = v.detach() if isinstance(v, torch.Tensor) else v
-            self.log(f"val/{k}", v_log, on_step=False, on_epoch=True,
+            v_scalar = v.item() if isinstance(v, torch.Tensor) else v
+            self.log(f"val/{k}", v_scalar, on_step=False, on_epoch=True,
                      prog_bar=False, batch_size=batch.num_graphs)
-            self._accumulate(f"val/{k}", v.item() if isinstance(v, torch.Tensor) else v)
+            self._accumulate(f"val/{k}", v_scalar)
         return loss
 
     def test_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
             v_log = v.detach() if isinstance(v, torch.Tensor) else v
-            self.log(f"test/{k}", v_log, on_epoch=True, batch_size=batch.num_graphs)
+            v_scalar = v.item() if isinstance(v, torch.Tensor) else v
+            self.log(f"test/{k}", v_scalar, on_epoch=True, batch_size=batch.num_graphs)
         return loss
 
     def on_train_epoch_end(self):
