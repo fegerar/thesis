@@ -10,6 +10,7 @@ data:
   test_ratio: 0.1
   num_workers: 0
   seed: 42
+  include_position: false      # exclude x,y coordinates from node features
 
 # --- Model ---
 model:

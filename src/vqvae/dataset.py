@@ -46,10 +46,12 @@ class ShapegraphDataset(Dataset):
         return self._graphs[idx]
 
 
-def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int]) -> Data | None:
+def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int],
+              include_position: bool = True) -> Data | None:
     """Convert a NetworkX shapegraph to a PyG Data object.
 
-    Node features: [x, y, team_binary, has_ball_binary, role_one_hot...]
+    Node features (include_position=True):  [x, y, team, has_ball, role_one_hot...]
+    Node features (include_position=False): [team, has_ball, role_one_hot...]
     """
     if G.number_of_nodes() == 0:
         return None
@@ -57,9 +59,6 @@ def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int]) -> Data | None:
     num_roles = len(role_vocab)
     node_attrs = []
     for _, attrs in G.nodes(data=True):
-        # Continuous: position
-        px = float(attrs.get("x", 0.0))
-        py = float(attrs.get("y", 0.0))
         # Binary: team (home=0, away=1)
         team = 1.0 if attrs.get("team", "") == "away" else 0.0
         # Binary: has_ball
@@ -70,7 +69,12 @@ def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int]) -> Data | None:
         if role in role_vocab:
             role_oh[role_vocab[role]] = 1.0
 
-        node_attrs.append([px, py, team, has_ball] + role_oh)
+        if include_position:
+            px = float(attrs.get("x", 0.0))
+            py = float(attrs.get("y", 0.0))
+            node_attrs.append([px, py, team, has_ball] + role_oh)
+        else:
+            node_attrs.append([team, has_ball] + role_oh)
 
     x = torch.tensor(node_attrs, dtype=torch.float)
 
@@ -91,7 +95,8 @@ def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int]) -> Data | None:
     return Data(x=x, edge_index=edge_index)
 
 
-def load_shapegraphs(path: str | Path) -> tuple[list[Data], int]:
+def load_shapegraphs(path: str | Path,
+                     include_position: bool = True) -> tuple[list[Data], int]:
     """Load shapegraphs.pkl and convert all frames to PyG Data objects.
 
     Returns (data_list, node_dim).
@@ -106,12 +111,12 @@ def load_shapegraphs(path: str | Path) -> tuple[list[Data], int]:
     for game in games:
         for frame_data in game.values():
             G = frame_data["original"]
-            data = nx_to_pyg(G, role_vocab)
+            data = nx_to_pyg(G, role_vocab, include_position=include_position)
             if data is not None:
                 data_list.append(data)
 
-    # node_dim = 4 (x, y, team, has_ball) + num_roles
-    node_dim = 4 + len(role_vocab)
+    # node_dim = 2 (x, y) + 2 (team, has_ball) + num_roles  OR  2 + num_roles
+    node_dim = (4 if include_position else 2) + len(role_vocab)
     return data_list, node_dim
 
 
@@ -122,12 +127,13 @@ def build_dataloaders(
     val_ratio: float = 0.1,
     num_workers: int = 4,
     seed: int = 42,
+    include_position: bool = True,
 ) -> tuple[DataLoader, DataLoader, DataLoader, int]:
     """Build train/val/test dataloaders from shapegraphs.pkl.
 
     Returns (train_loader, val_loader, test_loader, node_dim).
     """
-    all_data, node_dim = load_shapegraphs(data_path)
+    all_data, node_dim = load_shapegraphs(data_path, include_position=include_position)
     n = len(all_data)
 
     generator = torch.Generator().manual_seed(seed)

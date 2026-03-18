@@ -21,9 +21,11 @@ from .model import VQVAE
 
 class VQVAELightningModule(L.LightningModule):
     def __init__(self, model_cfg: dict, loss_cfg: dict, training_cfg: dict,
-                 logging_cfg: dict, node_dim: int):
+                 logging_cfg: dict, node_dim: int, include_position: bool = True):
         super().__init__()
         self.save_hyperparameters()
+
+        self.include_position = include_position
 
         self.model = VQVAE(
             node_dim=node_dim,
@@ -86,15 +88,20 @@ class VQVAELightningModule(L.LightningModule):
 
         # --- Node reconstruction loss (only on valid nodes) ---
 
-        # Positions: x, y (indices 0-1), MSE
-        pos_pred = node_feats[..., :2]
-        pos_gt = x_target[..., :2]
-        pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
-        pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
+        if self.include_position:
+            # Positions: x, y (indices 0-1), MSE
+            pos_pred = node_feats[..., :2]
+            pos_gt = x_target[..., :2]
+            pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
+            pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
+            flag_start = 2
+        else:
+            pos_loss = torch.tensor(0.0, device=node_feats.device)
+            flag_start = 0
 
-        # Binary/categorical features: team, has_ball, role_one_hot (indices 2+)
-        flag_logits = node_feats[..., 2:]
-        flag_gt = x_target[..., 2:]
+        # Binary/categorical features: team, has_ball, role_one_hot
+        flag_logits = node_feats[..., flag_start:]
+        flag_gt = x_target[..., flag_start:]
         flag_diff = F.binary_cross_entropy_with_logits(flag_logits, flag_gt, reduction="none")
         flag_loss = (flag_diff * node_mask.unsqueeze(-1)).sum() / node_mask.sum().clamp(min=1) / flag_diff.size(-1)
 
@@ -122,16 +129,18 @@ class VQVAELightningModule(L.LightningModule):
 
         # --- Soft structural constraints ---
 
-        # (1) Team balance: exactly 11 players per team (team flag is index 2)
+        # (1) Team balance: exactly 11 players per team
         # Sum of sigmoid(team_logit) over valid nodes should be ~11
-        team_probs = torch.sigmoid(node_feats[..., 2])           # (B, N_roles)
+        team_idx = flag_start      # 2 with position, 0 without
+        ball_idx = flag_start + 1  # 3 with position, 1 without
+        team_probs = torch.sigmoid(node_feats[..., team_idx])    # (B, N_roles)
         team_sum = (team_probs * node_mask.float()).sum(dim=1)   # (B,) — #away players
         n_valid = node_mask.float().sum(dim=1)                   # (B,) — total valid nodes
         expected_away = n_valid / 2                              # should be 11 for full graphs
         team_loss = F.mse_loss(team_sum, expected_away)
 
-        # (2) Ball carrier: exactly one player has the ball (has_ball flag is index 3)
-        ball_probs = torch.sigmoid(node_feats[..., 3])           # (B, N_roles)
+        # (2) Ball carrier: exactly one player has the ball
+        ball_probs = torch.sigmoid(node_feats[..., ball_idx])    # (B, N_roles)
         ball_sum = (ball_probs * node_mask.float()).sum(dim=1)   # (B,) — should be ~1
         ball_loss = F.mse_loss(ball_sum, torch.ones_like(ball_sum))
 
@@ -159,7 +168,8 @@ class VQVAELightningModule(L.LightningModule):
     def training_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            self.log(f"train/{k}", v, on_step=True, on_epoch=True,
+            v_log = v.detach() if isinstance(v, torch.Tensor) else v
+            self.log(f"train/{k}", v_log, on_step=True, on_epoch=True,
                      prog_bar=False, batch_size=batch.num_graphs)
             self._accumulate(f"train/{k}", v.item() if isinstance(v, torch.Tensor) else v)
 
@@ -177,7 +187,8 @@ class VQVAELightningModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            self.log(f"val/{k}", v, on_step=False, on_epoch=True,
+            v_log = v.detach() if isinstance(v, torch.Tensor) else v
+            self.log(f"val/{k}", v_log, on_step=False, on_epoch=True,
                      prog_bar=False, batch_size=batch.num_graphs)
             self._accumulate(f"val/{k}", v.item() if isinstance(v, torch.Tensor) else v)
         return loss
@@ -185,7 +196,8 @@ class VQVAELightningModule(L.LightningModule):
     def test_step(self, batch, batch_idx):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
-            self.log(f"test/{k}", v, on_epoch=True, batch_size=batch.num_graphs)
+            v_log = v.detach() if isinstance(v, torch.Tensor) else v
+            self.log(f"test/{k}", v_log, on_epoch=True, batch_size=batch.num_graphs)
         return loss
 
     def on_train_epoch_end(self):
