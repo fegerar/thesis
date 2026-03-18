@@ -174,6 +174,13 @@ class VQVAELightningModule(L.LightningModule):
                 self.log("train/codes_restarted", float(n_restarted),
                          batch_size=batch.num_graphs)
 
+        # GPU memory diagnostics
+        if batch_idx % 200 == 0:
+            allocated = torch.cuda.memory_allocated() / 1024**2
+            reserved = torch.cuda.memory_reserved() / 1024**2
+            self.log("debug/gpu_allocated_mb", allocated, on_step=True, on_epoch=False)
+            self.log("debug/gpu_reserved_mb", reserved, on_step=True, on_epoch=False)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
