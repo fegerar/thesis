@@ -39,9 +39,7 @@ class VQVAELightningModule(L.LightningModule):
         self.lambda_pos = loss_cfg.get("lambda_pos", 1.0)
         self.lambda_flag = loss_cfg.get("lambda_flag", 1.0)
         # Soft constraint weights — small by default, tune if needed
-        self.lambda_team = loss_cfg.get("lambda_team", 0.1)
         self.lambda_ball = loss_cfg.get("lambda_ball", 0.1)
-        self.lambda_team_entropy = loss_cfg.get("lambda_team_entropy", 0.1)
 
         self.lr = training_cfg["learning_rate"]
         self.weight_decay = training_cfg.get("weight_decay", 1e-5)
@@ -130,24 +128,10 @@ class VQVAELightningModule(L.LightningModule):
 
         # --- Soft structural constraints ---
 
-        team_idx = flag_start      # 2 with position, 0 without
         ball_idx = flag_start + 1  # 3 with position, 1 without
         mask_f = node_mask.float()
 
-        # (1) Team balance: exactly 11 players per team
-        team_probs = torch.sigmoid(node_feats[..., team_idx])    # (B, N_roles)
-        team_sum = (team_probs * mask_f).sum(dim=1)              # (B,)
-        n_valid = mask_f.sum(dim=1)                              # (B,)
-        expected_away = n_valid / 2                              # should be 11 for full graphs
-        team_loss = F.mse_loss(team_sum, expected_away)
-
-        # Entropy penalty: push team probs toward 0 or 1 (discourage hedging)
-        eps = 1e-8
-        team_entropy = -(team_probs * torch.log(team_probs + eps)
-                         + (1 - team_probs) * torch.log(1 - team_probs + eps))
-        team_entropy_loss = (team_entropy * mask_f).sum() / mask_f.sum().clamp(min=1)
-
-        # (2) Ball carrier: softmax over nodes (categorical choice — exactly 1)
+        # Ball carrier: softmax over nodes (categorical choice — exactly 1)
         ball_logits = node_feats[..., ball_idx]                  # (B, N_roles)
         ball_logits = ball_logits.masked_fill(~node_mask, -1e9)  # mask out padding
         ball_gt = x_target[..., ball_idx]                        # (B, N_roles) one-hot
@@ -159,8 +143,6 @@ class VQVAELightningModule(L.LightningModule):
             self.lambda_node * (self.lambda_pos * pos_loss + self.lambda_flag * flag_loss)
             + self.lambda_edge * edge_loss
             + vq_loss
-            + self.lambda_team * team_loss
-            + self.lambda_team_entropy * team_entropy_loss
             + self.lambda_ball * ball_loss
         )
 
@@ -171,8 +153,6 @@ class VQVAELightningModule(L.LightningModule):
             "edge_loss": edge_loss,
             "vq_loss": vq_loss,
             "codebook_utilization": utilization,
-            "team_loss": team_loss,
-            "team_entropy_loss": team_entropy_loss,
             "ball_loss": ball_loss,
         }
         return total_loss, metrics
@@ -181,7 +161,7 @@ class VQVAELightningModule(L.LightningModule):
         loss, metrics = self._compute_loss(batch)
         for k, v in metrics.items():
             v_log = v.detach() if isinstance(v, torch.Tensor) else v
-            self.log(f"train/{k}", v_log, on_step=True, on_epoch=True,
+            self.log(f"train/{k}", v_log, on_step=True, on_epoch=False,
                      prog_bar=False, batch_size=batch.num_graphs)
             self._accumulate(f"train/{k}", v.item() if isinstance(v, torch.Tensor) else v)
 
