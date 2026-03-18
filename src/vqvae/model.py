@@ -150,6 +150,8 @@ class VectorQuantizer(nn.Module):
         return z_q_st, k, vq_loss, utilization
 
     def _ema_update(self, z_e, k):
+        z_e = z_e.detach()
+        k = k.detach()
         one_hot = F.one_hot(k, self.K).float()  # (B, K)
         cluster_size = one_hot.sum(dim=0)        # (K,)
         embed_sum = one_hot.T @ z_e              # (K, D)
