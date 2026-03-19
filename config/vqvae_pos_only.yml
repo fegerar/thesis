@@ -21,7 +21,7 @@ model:
     num_layers: 3
     heads: 4
     dropout: 0.1
-    num_summary_tokens: 4   # multi-token bottleneck (4 tokens per graph)
+    num_summary_tokens: 8   # multi-token bottleneck (4 tokens per graph)
 
   # Vector Quantizer
   quantizer:
