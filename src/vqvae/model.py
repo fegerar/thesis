@@ -132,10 +132,6 @@ class VectorQuantizer(nn.Module):
 
         self.codebook = nn.Embedding(self.K, self.D)
         nn.init.uniform_(self.codebook.weight, -1 / self.K, 1 / self.K)
-        # Initialize on unit sphere
-        self.codebook.weight.data.copy_(
-            F.normalize(self.codebook.weight.data, dim=-1)
-        )
 
         if use_ema:
             self.codebook.weight.requires_grad = False
@@ -151,9 +147,7 @@ class VectorQuantizer(nn.Module):
         else:
             T = None
 
-        # L2-normalize encoder output and codebook to prevent unbounded drift
-        z_e = F.normalize(z_e, dim=-1)
-        w = F.normalize(self.codebook.weight, dim=-1)
+        w = self.codebook.weight
 
         distances = (
             z_e.pow(2).sum(dim=1, keepdim=True)
@@ -208,13 +202,11 @@ class VectorQuantizer(nn.Module):
         n = self.ema_cluster_size.sum()
         smoothed = (self.ema_cluster_size + 1e-5) / (n + self.K * 1e-5) * n
         updated = self.ema_embed_sum / smoothed.unsqueeze(1)
-        # Re-normalize codebook entries to unit sphere
-        self.codebook.weight.data.copy_(F.normalize(updated, dim=-1))
+        self.codebook.weight.data.copy_(updated)
 
     def restart_unused_codes(self, z_e):
         """Reinitialize codebook entries that are rarely used."""
         with torch.no_grad():
-            z_e = F.normalize(z_e, dim=-1)
             usage = self.ema_cluster_size
             dead = usage < self.restart_threshold
             n_dead = dead.sum().item()
@@ -348,5 +340,5 @@ class VQVAE(nn.Module):
         Args:
             tokens: (B,) for single-token or (B, T) for multi-token
         """
-        z_q = F.normalize(self.quantizer.codebook(tokens), dim=-1)
+        z_q = self.quantizer.codebook(tokens)
         return self.decoder(z_q)
