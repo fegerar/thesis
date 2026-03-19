@@ -61,7 +61,7 @@ logging:
 
 # --- Checkpointing ---
 checkpointing:
-  dir: "checkpoints/vqvae"
+  dir: "/content/drive/MyDrive/thesis/checkpoints/vqvae"
   save_top_k: 3
   save_every_n_epochs: 10
   monitor: "val/loss"
