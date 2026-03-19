@@ -16,13 +16,17 @@ from torch_geometric.nn import GATConv
 
 class ShapegraphEncoder(nn.Module):
     def __init__(self, node_dim: int, hidden_dim: int, embed_dim: int,
-                 num_layers: int = 3, heads: int = 4, dropout: float = 0.1):
+                 num_layers: int = 3, heads: int = 4, dropout: float = 0.1,
+                 num_summary_tokens: int = 1):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self.num_summary_tokens = num_summary_tokens
         self.input_proj = nn.Linear(node_dim, hidden_dim)
 
-        # Learnable CLS token — one vector shared across all graphs, broadcast per batch
-        self.cls_token = nn.Parameter(torch.randn(1, hidden_dim))
+        # Learnable summary tokens — T vectors per graph for multi-token bottleneck
+        self.summary_tokens = nn.Parameter(
+            torch.randn(num_summary_tokens, hidden_dim)
+        )
 
         self.gat_layers = nn.ModuleList([
             GATConv(hidden_dim, hidden_dim // heads, heads=heads,
@@ -42,47 +46,75 @@ class ShapegraphEncoder(nn.Module):
             batch:      (N_total,)             — graph index per node
 
         Returns:
-            z_e: (B, embed_dim)
+            z_e: (B, T, embed_dim)  where T = num_summary_tokens
         """
         B = int(batch.max().item()) + 1
+        T = self.num_summary_tokens
         device = x.device
 
         # Project input nodes to hidden_dim
         h = self.input_proj(x)  # (N_total, hidden_dim)
 
-        # --- Prepend one CLS node per graph ---
-        # CLS embeddings: one per graph in the batch
-        cls_tokens = self.cls_token.expand(B, -1)  # (B, hidden_dim)
+        # --- Prepend T summary nodes per graph ---
+        # Summary tokens: T per graph, total B*T prepended nodes
+        summary = self.summary_tokens.unsqueeze(0).expand(B, -1, -1)  # (B, T, hidden_dim)
+        summary_flat = summary.reshape(B * T, -1)                      # (B*T, hidden_dim)
 
-        # New node tensor: [cls_0, cls_1, ..., cls_{B-1}, node_0, node_1, ...]
-        h = torch.cat([cls_tokens, h], dim=0)  # (B + N_total, hidden_dim)
+        # New node tensor: [sum_0_0..sum_0_{T-1}, sum_1_0..., node_0, node_1, ...]
+        h = torch.cat([summary_flat, h], dim=0)  # (B*T + N_total, hidden_dim)
 
-        # Update batch vector: CLS nodes belong to graphs 0..B-1
-        cls_batch = torch.arange(B, device=device)          # (B,)
-        batch_new = torch.cat([cls_batch, batch], dim=0)    # (B + N_total,)
+        # Update batch vector: summary nodes belong to their respective graphs
+        summary_batch = torch.arange(B, device=device).repeat_interleave(T)  # (B*T,)
+        batch_new = torch.cat([summary_batch, batch], dim=0)
 
-        # Update edge_index: original node indices shift by B
-        edge_index_shifted = edge_index + B  # (2, E_total)
+        # Update edge_index: original node indices shift by B*T
+        offset = B * T
+        edge_index_shifted = edge_index + offset
 
-        # Connect each CLS node bidirectionally to all nodes in its graph
-        # For graph g, CLS index = g; node indices in new tensor = B + (positions where batch==g)
-        node_indices = torch.arange(len(batch), device=device) + B  # original nodes, shifted
-        cls_indices = batch  # for node i, its graph's CLS token is at index batch[i]
+        # Connect each summary node bidirectionally to all nodes in its graph
+        node_indices = torch.arange(len(batch), device=device) + offset
+        node_graph_ids = batch  # graph id for each original node
 
-        # Edges: CLS -> node and node -> CLS for every node
-        cls_to_node = torch.stack([cls_indices, node_indices], dim=0)   # (2, N_total)
-        node_to_cls = torch.stack([node_indices, cls_indices], dim=0)   # (2, N_total)
-        cls_edges = torch.cat([cls_to_node, node_to_cls], dim=1)        # (2, 2*N_total)
+        # For each node, connect to all T summary tokens of its graph
+        # Summary token j of graph g is at index g*T + j
+        summary_base = node_graph_ids * T  # (N_total,) — base index for each node's graph
+        summary_edges_src = []
+        summary_edges_dst = []
+        for j in range(T):
+            s_indices = summary_base + j  # (N_total,)
+            summary_edges_src.append(s_indices)
+            summary_edges_dst.append(node_indices)
+            summary_edges_src.append(node_indices)
+            summary_edges_dst.append(s_indices)
 
-        edge_index_new = torch.cat([edge_index_shifted, cls_edges], dim=1)  # (2, E_total + 2*N_total)
+        summary_src = torch.cat(summary_edges_src, dim=0)
+        summary_dst = torch.cat(summary_edges_dst, dim=0)
+        summary_edges = torch.stack([summary_src, summary_dst], dim=0)
+
+        # Also connect summary tokens to each other within the same graph
+        if T > 1:
+            s2s_src = []
+            s2s_dst = []
+            graph_bases = torch.arange(B, device=device) * T  # (B,)
+            for i in range(T):
+                for j in range(T):
+                    if i != j:
+                        s2s_src.append(graph_bases + i)
+                        s2s_dst.append(graph_bases + j)
+            s2s_src = torch.cat(s2s_src, dim=0)
+            s2s_dst = torch.cat(s2s_dst, dim=0)
+            s2s_edges = torch.stack([s2s_src, s2s_dst], dim=0)
+            edge_index_new = torch.cat([edge_index_shifted, summary_edges, s2s_edges], dim=1)
+        else:
+            edge_index_new = torch.cat([edge_index_shifted, summary_edges], dim=1)
 
         # --- GAT layers ---
         for gat, norm in zip(self.gat_layers, self.norm_layers):
             h = norm(h + gat(h, edge_index_new))
 
-        # --- Extract CLS token for each graph (indices 0..B-1) ---
-        cls_out = h[:B]                      # (B, hidden_dim)
-        z_e = self.output_proj(cls_out)      # (B, embed_dim)
+        # --- Extract summary tokens: indices 0..B*T-1 ---
+        summary_out = h[:B * T].reshape(B, T, -1)    # (B, T, hidden_dim)
+        z_e = self.output_proj(summary_out)            # (B, T, embed_dim)
         return z_e
 
 
@@ -111,7 +143,14 @@ class VectorQuantizer(nn.Module):
             self.register_buffer("ema_embed_sum", self.codebook.weight.clone())
 
     def forward(self, z_e):
-        # z_e: (B, D)
+        # z_e: (B, D) or (B, T, D) for multi-token
+        input_shape = z_e.shape
+        if z_e.dim() == 3:
+            B, T, D = z_e.shape
+            z_e = z_e.reshape(B * T, D)
+        else:
+            T = None
+
         # L2-normalize encoder output and codebook to prevent unbounded drift
         z_e = F.normalize(z_e, dim=-1)
         w = F.normalize(self.codebook.weight, dim=-1)
@@ -120,10 +159,10 @@ class VectorQuantizer(nn.Module):
             z_e.pow(2).sum(dim=1, keepdim=True)
             - 2 * z_e @ w.T
             + w.pow(2).sum(dim=1)
-        )  # (B, K)
+        )  # (B*T, K)
 
-        k = distances.argmin(dim=1)  # (B,)
-        z_q = w[k]                   # (B, D)
+        k = distances.argmin(dim=1)  # (B*T,)
+        z_q = w[k]                   # (B*T, D)
 
         if self.training and self.use_ema:
             self._ema_update(z_e, k)
@@ -133,12 +172,9 @@ class VectorQuantizer(nn.Module):
 
         # Losses
         if self.use_ema:
-            # With EMA the codebook updates outside the compute graph.
-            # Only the commitment loss is needed: push z_e toward sg(z_q)
             commitment_loss = F.mse_loss(z_e, z_q.detach())
             vq_loss = self.beta * commitment_loss
         else:
-            # Without EMA both terms are needed
             codebook_loss = F.mse_loss(z_q, z_e.detach())
             commitment_loss = F.mse_loss(z_e, z_q.detach())
             vq_loss = codebook_loss + self.beta * commitment_loss
@@ -146,6 +182,11 @@ class VectorQuantizer(nn.Module):
         # Codebook utilization
         unique_codes = k.unique().numel()
         utilization = unique_codes / self.K
+
+        # Reshape back to (B, T, D) if multi-token
+        if T is not None:
+            z_q_st = z_q_st.reshape(B, T, D)
+            k = k.reshape(B, T)
 
         return z_q_st, k, vq_loss, utilization
 
@@ -227,9 +268,11 @@ class ShapegraphDecoder(nn.Module):
     def forward(self, z_q):
         B = z_q.size(0)
         queries = self.role_queries.unsqueeze(0).expand(B, -1, -1)  # (B, N, D)
-        z_q_ctx = z_q.unsqueeze(1)                                   # (B, 1, D)
 
-        # Cross-attention: role queries attend to z_q
+        # z_q can be (B, D) single-token or (B, T, D) multi-token
+        z_q_ctx = z_q.unsqueeze(1) if z_q.dim() == 2 else z_q      # (B, T, D)
+
+        # Cross-attention: role queries attend to z_q tokens
         h, _ = self.cross_attn(queries, z_q_ctx, z_q_ctx)
         h = self.cross_norm(queries + h)
 
@@ -260,6 +303,7 @@ class VQVAE(nn.Module):
             num_layers=encoder_cfg["num_layers"],
             heads=encoder_cfg["heads"],
             dropout=encoder_cfg.get("dropout", 0.1),
+            num_summary_tokens=encoder_cfg.get("num_summary_tokens", 1),
         )
         self.quantizer = VectorQuantizer(
             num_embeddings=quantizer_cfg["num_embeddings"],
@@ -291,6 +335,10 @@ class VQVAE(nn.Module):
         return tokens
 
     def decode_from_tokens(self, tokens):
-        """Decode from codebook indices."""
+        """Decode from codebook indices.
+
+        Args:
+            tokens: (B,) for single-token or (B, T) for multi-token
+        """
         z_q = F.normalize(self.quantizer.codebook(tokens), dim=-1)
         return self.decoder(z_q)
