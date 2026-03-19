@@ -292,8 +292,9 @@ class ShapegraphDecoder(nn.Module):
 
 class VQVAE(nn.Module):
     def __init__(self, node_dim: int, encoder_cfg: dict, quantizer_cfg: dict,
-                 decoder_cfg: dict):
+                 decoder_cfg: dict, bypass_vq: bool = False):
         super().__init__()
+        self.bypass_vq = bypass_vq
         embed_dim = encoder_cfg["embed_dim"]
 
         self.encoder = ShapegraphEncoder(
@@ -324,6 +325,13 @@ class VQVAE(nn.Module):
 
     def forward(self, x, edge_index, batch):
         z_e = self.encoder(x, edge_index, batch)
+        if self.bypass_vq:
+            # Skip quantization — pure autoencoder for diagnostic
+            node_feats = self.decoder(z_e)
+            vq_loss = torch.tensor(0.0, device=z_e.device)
+            tokens = torch.zeros(z_e.shape[:-1], dtype=torch.long, device=z_e.device)
+            utilization = 0.0
+            return node_feats, z_e, z_e, tokens, vq_loss, utilization
         z_q, tokens, vq_loss, utilization = self.quantizer(z_e)
         node_feats = self.decoder(z_q)
         return node_feats, z_e, z_q, tokens, vq_loss, utilization

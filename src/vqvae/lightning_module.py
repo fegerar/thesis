@@ -30,6 +30,7 @@ class VQVAELightningModule(L.LightningModule):
             encoder_cfg=model_cfg["encoder"],
             quantizer_cfg=model_cfg["quantizer"],
             decoder_cfg=model_cfg["decoder"],
+            bypass_vq=model_cfg.get("bypass_vq", False),
         )
 
         self.lambda_pos = loss_cfg.get("lambda_pos", 1.0)
