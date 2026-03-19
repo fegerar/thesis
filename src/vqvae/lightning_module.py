@@ -14,18 +14,16 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import lightning as L
-from torch_geometric.utils import to_dense_batch, to_dense_adj
+from torch_geometric.utils import to_dense_batch
 
 from .model import VQVAE
 
 
 class VQVAELightningModule(L.LightningModule):
     def __init__(self, model_cfg: dict, loss_cfg: dict, training_cfg: dict,
-                 logging_cfg: dict, node_dim: int, include_position: bool = True):
+                 logging_cfg: dict, node_dim: int):
         super().__init__()
         self.save_hyperparameters()
-
-        self.include_position = include_position
 
         self.model = VQVAE(
             node_dim=node_dim,
@@ -34,10 +32,8 @@ class VQVAELightningModule(L.LightningModule):
             decoder_cfg=model_cfg["decoder"],
         )
 
-        self.lambda_node = loss_cfg.get("lambda_node", 1.0)
-        self.lambda_edge = loss_cfg.get("lambda_edge", 2.0)
         self.lambda_pos = loss_cfg.get("lambda_pos", 1.0)
-        self.lambda_flag = loss_cfg.get("lambda_flag", 1.0)
+        self.lambda_team = loss_cfg.get("lambda_team", 1.0)
         # Soft constraint weights — small by default, tune if needed
         self.lambda_ball = loss_cfg.get("lambda_ball", 0.1)
 
@@ -59,13 +55,12 @@ class VQVAELightningModule(L.LightningModule):
         self._epoch_metrics: dict[str, list[float]] = {}
 
     def _compute_loss(self, batch):
-        node_feats, adj_logits, z_e, z_q, tokens, vq_loss, utilization = (
+        node_feats, z_e, z_q, tokens, vq_loss, utilization = (
             self.model(batch.x, batch.edge_index, batch.batch)
         )
 
         # Dense ground truth
         x_dense, mask = to_dense_batch(batch.x, batch.batch)  # (B, N_max, F)
-        adj_gt = to_dense_adj(batch.edge_index, batch.batch)  # (B, N_max, N_max)
 
         B, N_max, F_dim = x_dense.shape
         N_roles = self.num_roles
@@ -76,84 +71,47 @@ class VQVAELightningModule(L.LightningModule):
             x_target = torch.cat([x_dense, pad_x], dim=1)
             pad_mask = torch.zeros(B, N_roles - N_max, dtype=torch.bool, device=mask.device)
             node_mask = torch.cat([mask, pad_mask], dim=1)
-
-            pad_adj = torch.zeros(B, N_roles, N_roles, device=adj_gt.device)
-            pad_adj[:, :N_max, :N_max] = adj_gt
-            adj_target = pad_adj
         else:
             x_target = x_dense[:, :N_roles]
             node_mask = mask[:, :N_roles]
-            adj_target = adj_gt[:, :N_roles, :N_roles]
 
-        # --- Node reconstruction loss (only on valid nodes) ---
+        # --- Position reconstruction loss (indices 0-1), MSE ---
+        pos_pred = node_feats[..., :2]
+        pos_gt = x_target[..., :2]
+        pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
+        pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
 
-        if self.include_position:
-            # Positions: x, y (indices 0-1), MSE
-            pos_pred = node_feats[..., :2]
-            pos_gt = x_target[..., :2]
-            pos_diff = (pos_pred - pos_gt).pow(2) * node_mask.unsqueeze(-1)
-            pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
-            flag_start = 2
-        else:
-            pos_loss = torch.tensor(0.0, device=node_feats.device)
-            flag_start = 0
-
-        # Binary/categorical features: team, has_ball, role_one_hot
-        flag_logits = node_feats[..., flag_start:]
-        flag_gt = x_target[..., flag_start:]
-        flag_diff = F.binary_cross_entropy_with_logits(flag_logits, flag_gt, reduction="none")
-        flag_loss = (flag_diff * node_mask.unsqueeze(-1)).sum() / node_mask.sum().clamp(min=1) / flag_diff.size(-1)
-
-        # --- Edge reconstruction loss ---
-        # FIX: previous code had edge_weight inverted (penalising negatives 10x less
-        # than positives), which caused the decoder to predict edges everywhere.
-        # Correct approach: use pos_weight = n_negatives / n_positives so that
-        # the rare positive edges get proportionally stronger gradient signal.
-        #
-        # With 22 nodes: ~231 possible edges, ~20 real edges → ratio ≈ 10.5
-        # We compute it dynamically from the batch so it adapts to the data.
-        with torch.no_grad():
-            edge_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1)  # (B, N, N)
-            n_possible = edge_mask.float().sum().clamp(min=1)
-            n_positive = adj_target[edge_mask].sum().clamp(min=1)
-            pos_weight = (n_possible - n_positive) / n_positive  # scalar, ~10-15x
-
-        edge_loss_raw = F.binary_cross_entropy_with_logits(
-            adj_logits,
-            adj_target,
-            pos_weight=pos_weight,   # scalar broadcast over all positive entries
-            reduction="none",
+        # --- Team reconstruction loss (index 2), BCE ---
+        team_logits = node_feats[..., 2]               # (B, N_roles)
+        team_gt = x_target[..., 2]                     # (B, N_roles)
+        team_diff = F.binary_cross_entropy_with_logits(
+            team_logits, team_gt, reduction="none"
         )
-        edge_loss = (edge_loss_raw * edge_mask).sum() / edge_mask.sum().clamp(min=1)
+        team_loss = (team_diff * node_mask).sum() / node_mask.sum().clamp(min=1)
 
-        # --- Soft structural constraints ---
-
-        ball_idx = flag_start + 1  # 3 with position, 1 without
+        # --- Ball carrier loss (index 3), softmax (exactly 1 carrier) ---
         mask_f = node_mask.float()
-
-        # Ball carrier: softmax over nodes (categorical choice — exactly 1)
-        ball_logits = node_feats[..., ball_idx]                  # (B, N_roles)
-        ball_logits = ball_logits.masked_fill(~node_mask, -1e9)  # mask out padding
-        ball_gt = x_target[..., ball_idx]                        # (B, N_roles) one-hot
-        ball_log_probs = F.log_softmax(ball_logits, dim=1)       # (B, N_roles)
+        ball_logits = node_feats[..., 3]                       # (B, N_roles)
+        ball_logits = ball_logits.masked_fill(~node_mask, -1e9)
+        ball_gt = x_target[..., 3]                             # (B, N_roles) one-hot
+        ball_log_probs = F.log_softmax(ball_logits, dim=1)
         ball_loss = -(ball_gt * ball_log_probs * mask_f).sum() / mask_f.sum().clamp(min=1)
 
         # --- Total loss ---
         total_loss = (
-            self.lambda_node * (self.lambda_pos * pos_loss + self.lambda_flag * flag_loss)
-            + self.lambda_edge * edge_loss
-            + vq_loss
+            self.lambda_pos * pos_loss
+            + self.lambda_team * team_loss
             + self.lambda_ball * ball_loss
+            + vq_loss
         )
 
         metrics = {
             "loss": total_loss,
             "pos_loss": pos_loss,
-            "flag_loss": flag_loss,
-            "edge_loss": edge_loss,
+            "team_loss": team_loss,
+            "ball_loss": ball_loss,
             "vq_loss": vq_loss,
             "codebook_utilization": utilization,
-            "ball_loss": ball_loss,
         }
         return total_loss, metrics
 

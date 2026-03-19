@@ -4,7 +4,7 @@ VQ-VAE model components for shapegraph tokenization.
 Components:
     - ShapegraphEncoder: GAT-based graph encoder -> fixed-size embedding (CLS token pooling)
     - VectorQuantizer: discrete bottleneck with EMA or gradient-based codebook updates
-    - ShapegraphDecoder: cross-attention decoder -> reconstructed node features + adjacency
+    - ShapegraphDecoder: cross-attention decoder -> reconstructed node features
     - VQVAE: full pipeline combining encoder, quantizer, decoder
 """
 
@@ -208,12 +208,6 @@ class ShapegraphDecoder(nn.Module):
             nn.Linear(hidden_dim, node_out_dim),
         )
 
-        self.edge_head = nn.Sequential(
-            nn.Linear(2 * embed_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
     def forward(self, z_q):
         B = z_q.size(0)
         queries = self.role_queries.unsqueeze(0).expand(B, -1, -1)  # (B, N, D)
@@ -229,14 +223,7 @@ class ShapegraphDecoder(nn.Module):
 
         node_feats = self.node_head(h)  # (B, N, node_out_dim)
 
-        # Pairwise edge prediction
-        N = self.num_roles
-        h_i = h.unsqueeze(2).expand(-1, -1, N, -1)
-        h_j = h.unsqueeze(1).expand(-1, N, -1, -1)
-        pair = torch.cat([h_i, h_j], dim=-1)          # (B, N, N, 2D)
-        adj_logits = self.edge_head(pair).squeeze(-1)  # (B, N, N)
-
-        return node_feats, adj_logits
+        return node_feats
 
 
 class VQVAE(nn.Module):
@@ -272,8 +259,8 @@ class VQVAE(nn.Module):
     def forward(self, x, edge_index, batch):
         z_e = self.encoder(x, edge_index, batch)
         z_q, tokens, vq_loss, utilization = self.quantizer(z_e)
-        node_feats, adj_logits = self.decoder(z_q)
-        return node_feats, adj_logits, z_e, z_q, tokens, vq_loss, utilization
+        node_feats = self.decoder(z_q)
+        return node_feats, z_e, z_q, tokens, vq_loss, utilization
 
     def encode(self, x, edge_index, batch):
         """Encode graphs to codebook indices (for inference)."""

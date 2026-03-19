@@ -32,7 +32,6 @@ def main():
 
     # Build dataloaders
     data_cfg = cfg["data"]
-    include_position = data_cfg.get("include_position", True)
     train_loader, val_loader, test_loader, node_dim = build_dataloaders(
         data_path=data_cfg["path"],
         batch_size=cfg["training"]["batch_size"],
@@ -40,7 +39,6 @@ def main():
         val_ratio=data_cfg["val_ratio"],
         num_workers=data_cfg["num_workers"],
         seed=data_cfg["seed"],
-        include_position=include_position,
     )
 
     # Build model
@@ -50,7 +48,6 @@ def main():
         training_cfg=cfg["training"],
         logging_cfg=cfg["logging"],
         node_dim=node_dim,
-        include_position=include_position,
     )
 
     # Loggers

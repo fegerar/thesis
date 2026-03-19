@@ -10,6 +10,10 @@ Pickle format: list[dict[int, {"original": nx.Graph, "nominal": nx.Graph}]]
   - Node attrs: x, y, team ("home"/"away"), inferred_role (str),
                 has_ball (bool), shirt, name, index
   - Edge attrs: distance, cross_team
+
+Node features: [x_norm, y_norm, team, has_ball]
+  - Positions normalized to [-1, 1] using pitch dimensions (105m x 68m)
+  - Roles and edges are derived post-hoc via the shapegraph algorithm
 """
 
 import pickle
@@ -20,18 +24,9 @@ import networkx as nx
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 
-
-# Collect all unique roles across the dataset for one-hot encoding
-def build_role_vocab(games: list[dict]) -> dict[str, int]:
-    """Scan all graphs to build a role -> index mapping."""
-    roles = set()
-    for game in games:
-        for frame_data in game.values():
-            G = frame_data["original"]
-            for _, attrs in G.nodes(data=True):
-                roles.add(attrs.get("inferred_role", "?"))
-    roles = sorted(roles)
-    return {r: i for i, r in enumerate(roles)}
+# Standard pitch dimensions (meters) used for normalization
+PITCH_X = 105.0
+PITCH_Y = 68.0
 
 
 class ShapegraphDataset(Dataset):
@@ -46,39 +41,30 @@ class ShapegraphDataset(Dataset):
         return self._graphs[idx]
 
 
-def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int],
-              include_position: bool = True) -> Data | None:
+def nx_to_pyg(G: nx.Graph) -> Data | None:
     """Convert a NetworkX shapegraph to a PyG Data object.
 
-    Node features (include_position=True):  [x, y, team, has_ball, role_one_hot...]
-    Node features (include_position=False): [team, has_ball, role_one_hot...]
+    Node features: [x_norm, y_norm, team, has_ball]
+      - Positions normalized to [-1, 1]
     """
     if G.number_of_nodes() == 0:
         return None
 
-    num_roles = len(role_vocab)
     node_attrs = []
     for _, attrs in G.nodes(data=True):
+        # Positions normalized to [-1, 1]
+        px = float(attrs.get("x", 0.0)) / (PITCH_X / 2) - 1.0
+        py = float(attrs.get("y", 0.0)) / (PITCH_Y / 2) - 1.0
         # Binary: team (home=0, away=1)
         team = 1.0 if attrs.get("team", "") == "away" else 0.0
         # Binary: has_ball
         has_ball = 1.0 if attrs.get("has_ball", False) else 0.0
-        # One-hot: inferred role
-        role = attrs.get("inferred_role", "?")
-        role_oh = [0.0] * num_roles
-        if role in role_vocab:
-            role_oh[role_vocab[role]] = 1.0
 
-        if include_position:
-            px = float(attrs.get("x", 0.0))
-            py = float(attrs.get("y", 0.0))
-            node_attrs.append([px, py, team, has_ball] + role_oh)
-        else:
-            node_attrs.append([team, has_ball] + role_oh)
+        node_attrs.append([px, py, team, has_ball])
 
     x = torch.tensor(node_attrs, dtype=torch.float)
 
-    # Build edge_index
+    # Build edge_index (still needed for GAT encoder message passing)
     edges = list(G.edges())
     if len(edges) > 0:
         node_ids = list(G.nodes())
@@ -95,8 +81,7 @@ def nx_to_pyg(G: nx.Graph, role_vocab: dict[str, int],
     return Data(x=x, edge_index=edge_index)
 
 
-def load_shapegraphs(path: str | Path,
-                     include_position: bool = True) -> tuple[list[Data], int]:
+def load_shapegraphs(path: str | Path) -> tuple[list[Data], int]:
     """Load shapegraphs.pkl and convert all frames to PyG Data objects.
 
     Returns (data_list, node_dim).
@@ -104,19 +89,16 @@ def load_shapegraphs(path: str | Path,
     with open(path, "rb") as f:
         games = pickle.load(f)
 
-    role_vocab = build_role_vocab(games)
-    print(f"Role vocabulary ({len(role_vocab)} roles): {list(role_vocab.keys())}")
-
     data_list = []
     for game in games:
         for frame_data in game.values():
             G = frame_data["original"]
-            data = nx_to_pyg(G, role_vocab, include_position=include_position)
+            data = nx_to_pyg(G)
             if data is not None:
                 data_list.append(data)
 
-    # node_dim = 2 (x, y) + 2 (team, has_ball) + num_roles  OR  2 + num_roles
-    node_dim = (4 if include_position else 2) + len(role_vocab)
+    node_dim = 4  # x_norm, y_norm, team, has_ball
+    print(f"Loaded {len(data_list)} shapegraphs (node_dim={node_dim})")
     return data_list, node_dim
 
 
@@ -127,13 +109,12 @@ def build_dataloaders(
     val_ratio: float = 0.1,
     num_workers: int = 4,
     seed: int = 42,
-    include_position: bool = True,
 ) -> tuple[DataLoader, DataLoader, DataLoader, int]:
     """Build train/val/test dataloaders from shapegraphs.pkl.
 
     Returns (train_loader, val_loader, test_loader, node_dim).
     """
-    all_data, node_dim = load_shapegraphs(data_path, include_position=include_position)
+    all_data, node_dim = load_shapegraphs(data_path)
     n = len(all_data)
 
     generator = torch.Generator().manual_seed(seed)
