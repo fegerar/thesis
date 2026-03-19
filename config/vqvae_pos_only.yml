@@ -35,6 +35,7 @@ model:
     num_roles: 22           # fixed output slots (22 outfield players)
     hidden_dim: 256
     num_cross_attn_heads: 4
+    num_self_attn_layers: 3 # deeper decoder for better position refinement
 
 # --- Loss ---
 loss:

@@ -187,7 +187,7 @@ class VectorQuantizer(nn.Module):
 
 class ShapegraphDecoder(nn.Module):
     def __init__(self, embed_dim: int, num_roles: int, node_out_dim: int,
-                 hidden_dim: int, num_heads: int = 4):
+                 hidden_dim: int, num_heads: int = 4, num_self_attn_layers: int = 1):
         super().__init__()
         self.num_roles = num_roles
         self.role_queries = nn.Parameter(torch.randn(num_roles, embed_dim))
@@ -197,10 +197,26 @@ class ShapegraphDecoder(nn.Module):
         )
         self.cross_norm = nn.LayerNorm(embed_dim)
 
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim, num_heads=num_heads, batch_first=True
-        )
-        self.self_norm = nn.LayerNorm(embed_dim)
+        self.self_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_self_attn_layers)
+        ])
+        self.self_attn_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim)
+            for _ in range(num_self_attn_layers)
+        ])
+        self.self_attn_ffns = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embed_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, embed_dim),
+            )
+            for _ in range(num_self_attn_layers)
+        ])
+        self.self_attn_ffn_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim)
+            for _ in range(num_self_attn_layers)
+        ])
 
         self.node_head = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
@@ -217,9 +233,14 @@ class ShapegraphDecoder(nn.Module):
         h, _ = self.cross_attn(queries, z_q_ctx, z_q_ctx)
         h = self.cross_norm(queries + h)
 
-        # Self-attention among role slots
-        h2, _ = self.self_attn(h, h, h)
-        h = self.self_norm(h + h2)
+        # Self-attention layers among role slots
+        for attn, norm, ffn, ffn_norm in zip(
+            self.self_attn_layers, self.self_attn_norms,
+            self.self_attn_ffns, self.self_attn_ffn_norms,
+        ):
+            h2, _ = attn(h, h, h)
+            h = norm(h + h2)
+            h = ffn_norm(h + ffn(h))
 
         node_feats = self.node_head(h)  # (B, N, node_out_dim)
 
@@ -254,6 +275,7 @@ class VQVAE(nn.Module):
             node_out_dim=node_dim,
             hidden_dim=decoder_cfg["hidden_dim"],
             num_heads=decoder_cfg.get("num_cross_attn_heads", 4),
+            num_self_attn_layers=decoder_cfg.get("num_self_attn_layers", 1),
         )
 
     def forward(self, x, edge_index, batch):
