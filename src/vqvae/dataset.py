@@ -46,29 +46,39 @@ def nx_to_pyg(G: nx.Graph) -> Data | None:
 
     Node features: [x_norm, y_norm, team, has_ball]
       - Positions normalized to [-1, 1]
+      - Nodes sorted by team (home first), then by x-coordinate within each team,
+        so decoder slots have a consistent meaning.
     """
     if G.number_of_nodes() == 0:
         return None
 
-    node_attrs = []
-    for _, attrs in G.nodes(data=True):
-        # Positions normalized to [-1, 1]
-        px = float(attrs.get("x", 0.0)) / (PITCH_X / 2) - 1.0
-        py = float(attrs.get("y", 0.0)) / (PITCH_Y / 2) - 1.0
-        # Binary: team (home=0, away=1)
+    # Collect node data with original IDs for edge remapping
+    nodes = []
+    for nid, attrs in G.nodes(data=True):
+        px = float(attrs.get("x", 0.0))
+        py = float(attrs.get("y", 0.0))
         team = 1.0 if attrs.get("team", "") == "away" else 0.0
-        # Binary: has_ball
         has_ball = 1.0 if attrs.get("has_ball", False) else 0.0
+        nodes.append((nid, px, py, team, has_ball))
 
-        node_attrs.append([px, py, team, has_ball])
+    # Sort: home team (0) first, then away (1); within each team sort by x
+    nodes.sort(key=lambda n: (n[3], n[1]))
+
+    # Build node features with normalized positions
+    node_attrs = []
+    sorted_ids = []
+    for nid, px, py, team, has_ball in nodes:
+        px_norm = px / (PITCH_X / 2) - 1.0
+        py_norm = py / (PITCH_Y / 2) - 1.0
+        node_attrs.append([px_norm, py_norm, team, has_ball])
+        sorted_ids.append(nid)
 
     x = torch.tensor(node_attrs, dtype=torch.float)
 
-    # Build edge_index (still needed for GAT encoder message passing)
+    # Build edge_index with remapped indices (still needed for GAT encoder)
     edges = list(G.edges())
     if len(edges) > 0:
-        node_ids = list(G.nodes())
-        node_map = {nid: i for i, nid in enumerate(node_ids)}
+        node_map = {nid: i for i, nid in enumerate(sorted_ids)}
         src = [node_map[e[0]] for e in edges]
         dst = [node_map[e[1]] for e in edges]
         # Undirected: add both directions
