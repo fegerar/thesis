@@ -65,11 +65,12 @@ def nx_to_pyg(G: nx.Graph) -> Data | None:
     nodes.sort(key=lambda n: (n[3], n[1]))
 
     # Build node features with normalized positions
+    # DFL coords are centered at mid-pitch: x ∈ [-52.5, 52.5], y ∈ [-34, 34]
     node_attrs = []
     sorted_ids = []
     for nid, px, py, team, has_ball in nodes:
-        px_norm = px / (PITCH_X / 2) - 1.0
-        py_norm = py / (PITCH_Y / 2) - 1.0
+        px_norm = px / (PITCH_X / 2)
+        py_norm = py / (PITCH_Y / 2)
         node_attrs.append([px_norm, py_norm, team, has_ball])
         sorted_ids.append(nid)
 

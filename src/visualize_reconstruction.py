@@ -23,9 +23,11 @@ from vqvae.dataset import load_shapegraphs, ShapegraphDataset, PITCH_X, PITCH_Y
 
 
 def denormalize(x_norm, y_norm):
-    """Convert normalized [-1, 1] coordinates back to meters."""
-    x = (x_norm + 1.0) * (PITCH_X / 2)
-    y = (y_norm + 1.0) * (PITCH_Y / 2)
+    """Convert normalized [-1, 1] coordinates back to pitch-plot coords [0, PITCH]."""
+    # Normalized coords are centered: x_norm = raw_x / (PITCH_X/2)
+    # Convert to plot coords [0, PITCH_X] by undoing normalization and shifting
+    x = x_norm * (PITCH_X / 2) + (PITCH_X / 2)
+    y = y_norm * (PITCH_Y / 2) + (PITCH_Y / 2)
     return x, y
 
 
