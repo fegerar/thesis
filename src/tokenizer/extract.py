@@ -114,7 +114,10 @@ def _load_from_pkl(pkl_path: str | Path, matches: list[dict]) -> list[dict]:
 
 def _generate_fresh(matches: list[dict]) -> list[dict]:
     """Generate shapegraphs per match using the shapegraphs package."""
-    from shapegraphs.readers.bassek import generate_shapegraphs_from_files
+    import importlib
+    # Use importlib to avoid collision with local src/shapegraphs.py
+    bassek = importlib.import_module("shapegraphs.readers.bassek")
+    generate_shapegraphs_from_files = bassek.generate_shapegraphs_from_files
 
     results = []
     for m in matches:
