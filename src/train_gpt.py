@@ -94,6 +94,8 @@ def main():
     train_cfg = cfg["training"]
     trainer = L.Trainer(
         max_epochs=train_cfg["max_epochs"],
+        limit_train_batches=train_cfg.get("limit_train_batches"),
+        limit_val_batches=train_cfg.get("limit_val_batches"),
         logger=loggers,
         callbacks=callbacks,
         gradient_clip_val=train_cfg.get("gradient_clip_val", 1.0),
