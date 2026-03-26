@@ -141,6 +141,8 @@ class GPTLightningModule(L.LightningModule):
                     decay.add(fpn)
 
         param_dict = {pn: p for pn, p in self.model.named_parameters()}
+        decay &= param_dict.keys()
+        no_decay &= param_dict.keys()
         optim_groups = [
             {"params": [param_dict[pn] for pn in sorted(decay)],
              "weight_decay": self.weight_decay},
