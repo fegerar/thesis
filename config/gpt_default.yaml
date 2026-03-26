@@ -4,7 +4,7 @@
 
 # --- Data ---
 data:
-  token_dir: "output/tokens"      # directory with *_tokens.pt from tokenizer
+  token_dir: "/content/drive/MyDrive/thesis/tokens"      # directory with *_tokens.pt from tokenizer
   train_ratio: 0.8
   val_ratio: 0.1
   num_workers: 4
