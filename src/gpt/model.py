@@ -139,6 +139,8 @@ class ShapegraphGPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: int | None = None,
+        repetition_penalty: float = 1.0,
+        rep_window: int = 64,
     ) -> torch.Tensor:
         """Autoregressively generate tokens.
 
@@ -147,6 +149,8 @@ class ShapegraphGPT(nn.Module):
             max_new_tokens: number of tokens to generate
             temperature: sampling temperature (1.0 = no change)
             top_k: if set, only sample from top-k logits
+            repetition_penalty: penalize recently used tokens (>1.0 = less repetition)
+            rep_window: how many recent tokens to apply the penalty to
 
         Returns:
             (B, T + max_new_tokens) extended token sequence
@@ -155,7 +159,22 @@ class ShapegraphGPT(nn.Module):
             # Crop to context length
             idx_cond = idx[:, -self.context_length:]
             logits = self(idx_cond)
-            logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :]  # (B, V)
+
+            # Repetition penalty: reduce logits for tokens seen in recent window
+            if repetition_penalty != 1.0:
+                recent = idx[:, -rep_window:]
+                for b in range(logits.size(0)):
+                    recent_tokens = recent[b].unique()
+                    penalty_logits = logits[b, recent_tokens]
+                    # Penalize: divide positive logits, multiply negative logits
+                    logits[b, recent_tokens] = torch.where(
+                        penalty_logits > 0,
+                        penalty_logits / repetition_penalty,
+                        penalty_logits * repetition_penalty,
+                    )
+
+            logits = logits / temperature
 
             if top_k is not None:
                 v, _ = torch.topk(logits, top_k)

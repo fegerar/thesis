@@ -162,6 +162,8 @@ def main():
                         help="Number of decoded frames to generate")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=50)
+    parser.add_argument("--repetition-penalty", type=float, default=1.2,
+                        help="Penalize recently generated tokens (1.0=off, 1.2=moderate)")
     parser.add_argument("--fps", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -225,6 +227,7 @@ def main():
     generated = gpt_model.generate(
         cond, max_new_tokens=gen_tokens_needed,
         temperature=args.temperature, top_k=args.top_k,
+        repetition_penalty=args.repetition_penalty,
     )
     # Extract only the newly generated tokens
     new_tokens = generated[0, cond.size(1):].cpu().tolist()
