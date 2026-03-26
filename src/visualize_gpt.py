@@ -96,10 +96,54 @@ def decode_tokens_to_frames(token_seq, vqvae_model, tokens_per_frame, device):
     return frames
 
 
-def render_video(seed_frames, gen_frames, output_path, fps=4):
-    """Render seed + generated frames into a video."""
-    all_frames = seed_frames + gen_frames
-    n_seed = len(seed_frames)
+def interpolate_frames(keyframes, interp_steps=5):
+    """Linearly interpolate between keyframes for smooth animation.
+
+    Positions (x, y) are interpolated. Team and ball are held constant
+    from the source keyframe until the next one.
+
+    Returns:
+        (interpolated_frames, keyframe_indices) — the list of all frames
+        and which indices correspond to original keyframes.
+    """
+    if len(keyframes) < 2:
+        return keyframes, list(range(len(keyframes)))
+
+    interpolated = []
+    keyframe_indices = []
+
+    for i in range(len(keyframes) - 1):
+        src = keyframes[i]
+        dst = keyframes[i + 1]
+        keyframe_indices.append(len(interpolated))
+
+        for s in range(interp_steps):
+            t = s / interp_steps
+            frame = src.clone()
+            # Interpolate x, y positions
+            frame[:, 0] = src[:, 0] * (1 - t) + dst[:, 0] * t
+            frame[:, 1] = src[:, 1] * (1 - t) + dst[:, 1] * t
+            # Team and ball stay from src
+            interpolated.append(frame)
+
+    # Append last keyframe
+    keyframe_indices.append(len(interpolated))
+    interpolated.append(keyframes[-1])
+
+    return interpolated, keyframe_indices
+
+
+def render_video(seed_frames, gen_frames, output_path, fps=4, interp_steps=5):
+    """Render seed + generated frames into a video with smooth interpolation."""
+    n_seed_key = len(seed_frames)
+    all_keyframes = seed_frames + gen_frames
+
+    # Interpolate for smooth motion
+    all_frames, keyframe_indices = interpolate_frames(all_keyframes, interp_steps)
+    # The boundary between seed and generated in interpolated space
+    n_seed_interp = keyframe_indices[n_seed_key] if n_seed_key < len(keyframe_indices) else len(all_frames)
+
+    effective_fps = fps * interp_steps
 
     fig, ax = plt.subplots(figsize=(10, 7))
     fig.patch.set_facecolor("#1a1a2e")
@@ -114,12 +158,15 @@ def render_video(seed_frames, gen_frames, output_path, fps=4):
         draw_pitch(ax)
 
         feats = all_frames[frame_idx]
-        is_seed = frame_idx < n_seed
+        is_seed = frame_idx < n_seed_interp
         phase = "SEED (real)" if is_seed else "GENERATED"
         color_border = "#f39c12" if not is_seed else "#2ecc71"
 
+        # Show keyframe count
+        key_idx = sum(1 for ki in keyframe_indices if ki <= frame_idx)
+        total_key = len(all_keyframes)
         ax.set_title(
-            f"Frame {frame_idx + 1}/{len(all_frames)}  |  {phase}",
+            f"Keyframe {key_idx}/{total_key}  |  {phase}",
             fontsize=13, fontweight="bold", color=color_border, pad=10,
         )
 
@@ -138,13 +185,15 @@ def render_video(seed_frames, gen_frames, output_path, fps=4):
                   facecolor="#1a1a2e", edgecolor="white", labelcolor="white")
 
     anim = animation.FuncAnimation(
-        fig, animate, frames=len(all_frames), interval=1000 // fps, blit=False,
+        fig, animate, frames=len(all_frames),
+        interval=1000 // effective_fps, blit=False,
     )
-    anim.save(str(output_path), writer="ffmpeg", fps=fps, dpi=120,
+    anim.save(str(output_path), writer="ffmpeg", fps=effective_fps, dpi=120,
               savefig_kwargs={"facecolor": fig.get_facecolor()})
     plt.close()
-    print(f"Saved video to {output_path} ({len(all_frames)} frames, "
-          f"{n_seed} seed + {len(gen_frames)} generated)")
+    print(f"Saved video to {output_path} ({len(all_keyframes)} keyframes, "
+          f"{len(all_frames)} total frames with interpolation, "
+          f"{n_seed_key} seed + {len(gen_frames)} generated)")
 
 
 def main():
@@ -164,7 +213,10 @@ def main():
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--repetition-penalty", type=float, default=1.2,
                         help="Penalize recently generated tokens (1.0=off, 1.2=moderate)")
-    parser.add_argument("--fps", type=int, default=4)
+    parser.add_argument("--fps", type=int, default=4,
+                        help="Keyframe rate (actual video fps = fps * interp_steps)")
+    parser.add_argument("--interp-steps", type=int, default=5,
+                        help="Interpolation sub-frames between each keyframe")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -239,7 +291,8 @@ def main():
     print(f"Decoded {len(gen_frames)} generated frames")
 
     # Render video
-    render_video(seed_frames, gen_frames, args.output, fps=args.fps)
+    render_video(seed_frames, gen_frames, args.output,
+                 fps=args.fps, interp_steps=args.interp_steps)
 
 
 if __name__ == "__main__":
