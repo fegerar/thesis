@@ -4,6 +4,8 @@
 data/
 idsse-data/
 
+tokens/
+
 .DS_Store
 
 *__pycache__/

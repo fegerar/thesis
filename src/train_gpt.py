@@ -39,6 +39,7 @@ def main():
         val_ratio=data_cfg.get("val_ratio", 0.1),
         num_workers=data_cfg.get("num_workers", 4),
         seed=data_cfg.get("seed", 42),
+        goal_oversample_ratio=cfg["training"].get("goal_oversample_ratio", 1.0),
     )
 
     # Build model

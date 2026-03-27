@@ -43,6 +43,15 @@ class GPTLightningModule(L.LightningModule):
         self.warmup_epochs = training_cfg.get("warmup_epochs", 5)
         self.max_epochs = training_cfg["max_epochs"]
 
+        goal_weight = training_cfg.get("goal_weight", 1.0)
+        if goal_weight != 1.0:
+            vocab_size = model_cfg["vocab_size"]
+            loss_weights = torch.ones(vocab_size)
+            loss_weights[-1] = goal_weight  # GOAL token is always the last vocab entry
+            self.register_buffer("loss_weights", loss_weights)
+        else:
+            self.loss_weights = None
+
         # CSV logging
         self.csv_dir = Path(logging_cfg.get("csv_dir", "logs/gpt"))
         self.csv_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +68,7 @@ class GPTLightningModule(L.LightningModule):
         loss = F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
             y.reshape(-1),
+            weight=self.loss_weights,
         )
         perplexity = torch.exp(loss).item()
         return loss, {"loss": loss, "perplexity": perplexity}

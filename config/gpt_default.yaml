@@ -30,6 +30,8 @@ training:
   gradient_clip_val: 1.0
   limit_train_batches: 2000        # steps per "epoch" (validates & checkpoints every 2k steps)
   limit_val_batches: 200
+  goal_weight: 100.0               # cross-entropy loss weight for the GOAL token (1.0 = no weighting)
+  goal_oversample_ratio: 50.0      # how many times more often to sample windows containing a goal (1.0 = no oversampling)
 
 # --- Logging ---
 logging:

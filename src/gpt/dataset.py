@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +53,21 @@ def load_tokens(token_dir: str | Path) -> tuple[torch.Tensor, dict]:
     """
     token_dir = Path(token_dir)
     all_tokens = []
+    all_goal_positions = []  # absolute positions in the concatenated sequence
     total_matches = 0
     total_goals = 0
+    offset = 0
 
     for pt_file in sorted(token_dir.glob("*_tokens.pt")):
         data = torch.load(pt_file, weights_only=False)
         tokens = data["tokens"]
+        match_goal_positions = data.get("goal_positions", [])
+        for pos in match_goal_positions:
+            all_goal_positions.append(offset + pos)
         all_tokens.extend(tokens)
         total_matches += 1
-        total_goals += len(data.get("goal_positions", []))
+        total_goals += len(match_goal_positions)
+        offset += len(tokens)
 
     all_tokens = torch.tensor(all_tokens, dtype=torch.long)
 
@@ -69,6 +75,7 @@ def load_tokens(token_dir: str | Path) -> tuple[torch.Tensor, dict]:
         "num_matches": total_matches,
         "total_tokens": len(all_tokens),
         "total_goals": total_goals,
+        "goal_positions": all_goal_positions,
     }
     logger.info(
         "Loaded %d matches, %d tokens (%d goals)",
@@ -85,6 +92,7 @@ def build_dataloaders(
     val_ratio: float = 0.1,
     num_workers: int = 4,
     seed: int = 42,
+    goal_oversample_ratio: float = 1.0,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Build train/val/test dataloaders from tokenized match data.
 
@@ -110,11 +118,33 @@ def build_dataloaders(
     val_ds = TokenSequenceDataset(val_tokens, context_length)
     test_ds = TokenSequenceDataset(test_tokens, context_length)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, persistent_workers=num_workers > 0,
-        pin_memory=True,
-    )
+    if goal_oversample_ratio > 1.0:
+        train_goal_positions = [p for p in info["goal_positions"] if p < n_train]
+        dataset_len = len(train_ds)
+        weights = torch.ones(dataset_len)
+        for g in train_goal_positions:
+            # all windows [i, i+context_length) that contain position g
+            lo = max(0, g - context_length + 1)
+            hi = min(dataset_len - 1, g)
+            weights[lo : hi + 1] = goal_oversample_ratio
+        n_goal_windows = int((weights > 1.0).sum().item())
+        logger.info(
+            "Oversampling: %d goal-containing windows (ratio=%.1f)",
+            n_goal_windows, goal_oversample_ratio,
+        )
+        sampler = WeightedRandomSampler(weights, num_samples=dataset_len, replacement=True)
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, sampler=sampler,
+            num_workers=num_workers, persistent_workers=num_workers > 0,
+            pin_memory=True,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True,
+            num_workers=num_workers, persistent_workers=num_workers > 0,
+            pin_memory=True,
+        )
+
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, persistent_workers=num_workers > 0,
