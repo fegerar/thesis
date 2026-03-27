@@ -23,6 +23,16 @@ class GoalEvent:
     result: str  # e.g. "1:0"
 
 
+@dataclass
+class ShotEvent:
+    """A shot detected from event XML."""
+    event_time: datetime
+    team_id: str
+    player_id: str
+    xg: float
+    outcome: str  # "goal", "saved", "wide", "blocked", "woodwork"
+
+
 def setup_logging(level: str = "INFO") -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
@@ -106,6 +116,62 @@ def parse_goals(events_path: str | Path) -> list[GoalEvent]:
 
     logger.info(f"Found {len(goals)} goals in {Path(events_path).name}")
     return goals
+
+
+_SHOT_OUTCOME_MAP = {
+    "SuccessfulShot": "goal",
+    "SavedShot": "saved",
+    "ShotWide": "wide",
+    "ShotBlocked": "blocked",
+    "ShotWoodWork": "woodwork",
+}
+
+
+def parse_shots(events_path: str | Path) -> list[ShotEvent]:
+    """Parse all shot events from a DFL events XML file.
+
+    Every <ShotAtGoal> element is captured regardless of outcome.
+    The xG value is read directly from the element's xG attribute.
+    """
+    shots = []
+    tree = ET.parse(events_path)
+    root = tree.getroot()
+
+    for event_elem in root.iter("Event"):
+        shot = event_elem.find("ShotAtGoal")
+        if shot is None:
+            continue
+
+        event_time_str = event_elem.get("EventTime", "")
+        try:
+            event_time = datetime.fromisoformat(event_time_str)
+        except ValueError:
+            logger.warning(f"Could not parse EventTime: {event_time_str}")
+            continue
+
+        # Determine outcome
+        outcome = "unknown"
+        for child_tag, outcome_name in _SHOT_OUTCOME_MAP.items():
+            if shot.find(child_tag) is not None:
+                outcome = outcome_name
+                break
+
+        xg_str = shot.get("xG", "0.0")
+        try:
+            xg = float(xg_str)
+        except ValueError:
+            xg = 0.0
+
+        shots.append(ShotEvent(
+            event_time=event_time,
+            team_id=shot.get("Team", ""),
+            player_id=shot.get("Player", ""),
+            xg=xg,
+            outcome=outcome,
+        ))
+
+    logger.info(f"Found {len(shots)} shots in {Path(events_path).name}")
+    return shots
 
 
 def parse_match_start_time(events_path: str | Path) -> datetime | None:

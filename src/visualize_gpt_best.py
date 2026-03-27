@@ -31,7 +31,7 @@ from vqvae import VQVAELightningModule
 
 PITCH_X = 105.0
 PITCH_Y = 68.0
-GOAL_TOKEN = 256
+SHOT_TOKEN = 256
 
 
 def denormalize(x_norm, y_norm):
@@ -128,7 +128,7 @@ def beam_search_to_goal(
         total_expanded += B * branch_k
 
         # --- split into goal vs. non-goal candidates ---
-        is_goal    = cand_tok == GOAL_TOKEN              # (B*K,)
+        is_goal    = cand_tok == SHOT_TOKEN              # (B*K,)
         non_goal   = ~is_goal
 
         # collect goal-reaching sequences (CPU copy, rare)
@@ -182,7 +182,7 @@ def beam_search_to_goal(
 
 def decode_tokens_to_frames(token_seq, vqvae_model, tokens_per_frame, device):
     """Decode a flat token sequence into a list of (22, 4) node feature tensors."""
-    codebook_tokens = [t for t in token_seq if t != GOAL_TOKEN]
+    codebook_tokens = [t for t in token_seq if t != SHOT_TOKEN]
 
     n_usable = (len(codebook_tokens) // tokens_per_frame) * tokens_per_frame
     codebook_tokens = codebook_tokens[:n_usable]

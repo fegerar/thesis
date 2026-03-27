@@ -9,4 +9,5 @@ from .extract import load_shapegraphs_per_match
 from .deduplicate import deduplicate_match
 from .encode import VQVAEEncoder
 from .tokenize import build_token_sequence
+from .utils import parse_goals, parse_shots, GoalEvent, ShotEvent
 from .pipeline import run_pipeline

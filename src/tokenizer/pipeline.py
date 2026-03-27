@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch
 
-from .utils import setup_logging, parse_goals
+from .utils import setup_logging, parse_goals, parse_shots
 from .extract import load_shapegraphs_per_match
 from .deduplicate import deduplicate_match
 from .encode import VQVAEEncoder
@@ -79,14 +79,16 @@ def run_pipeline(
             dedup["frame_ids"], dedup["frames"]
         )
 
-        # Step 4: Parse goals and build token sequence
+        # Step 4: Parse shots and build token sequence
         goals = parse_goals(events_path)
+        shots = parse_shots(events_path)
         seq = build_token_sequence(
             frame_tokens=frame_tokens,
             frame_ids=dedup["frame_ids"],
             timestamps=dedup["timestamps"],
             goals=goals,
             codebook_size=encoder.codebook_size,
+            shots=shots,
         )
 
         # Build result
@@ -95,14 +97,18 @@ def run_pipeline(
             "tokens": seq["tokens"],
             "frame_ids": seq["frame_ids"],
             "timestamps": seq["timestamps"],
+            "shot_positions": seq["shot_positions"],
+            "shot_xg": seq["shot_xg"],
+            "shot_outcomes": seq["shot_outcomes"],
             "goal_positions": seq["goal_positions"],
             "metadata": {
                 "num_raw_frames": dedup["num_raw"],
                 "num_deduplicated_frames": dedup["num_deduped"],
                 "compression_ratio": dedup["compression_ratio"],
                 "num_goals": len(goals),
+                "num_shots": len(shots),
                 "vqvae_codebook_size": encoder.codebook_size,
-                "goal_token_id": seq["goal_token_id"],
+                "shot_token_id": seq["goal_token_id"],
                 "num_summary_tokens": encoder.num_summary_tokens,
             },
         }
@@ -120,6 +126,7 @@ def run_pipeline(
             "num_deduplicated_frames": dedup["num_deduped"],
             "compression_ratio": round(dedup["compression_ratio"], 4),
             "num_goals": len(goals),
+            "num_shots": len(shots),
         })
 
     # Save summary JSON
@@ -128,9 +135,11 @@ def run_pipeline(
         "total_tokens": sum(s["num_tokens"] for s in summary),
         "total_raw_frames": sum(s["num_raw_frames"] for s in summary),
         "total_deduped_frames": sum(s["num_deduplicated_frames"] for s in summary),
+        "total_shots": sum(s["num_shots"] for s in summary),
+        "total_goals": sum(s["num_goals"] for s in summary),
         "vqvae_codebook_size": encoder.codebook_size,
-        "goal_token_id": encoder.codebook_size,
-        "vocab_size": encoder.codebook_size + 1,  # codebook + GOAL
+        "shot_token_id": encoder.codebook_size,
+        "vocab_size": encoder.codebook_size + 1,  # codebook + SHOT
         "matches": summary,
     }
     summary_path = out_path / "summary.json"
