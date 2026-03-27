@@ -70,7 +70,7 @@ def beam_search_to_goal(
     temperature: float = 0.8,
     device: str = "cpu",
 ):
-    """Tree search expanding top-k branches, selecting the path that reaches GOAL fastest.
+    """Batched beam search: all active beams are forwarded in a single GPU pass per step.
 
     Args:
         gpt_model: ShapegraphGPT model
@@ -87,66 +87,73 @@ def beam_search_to_goal(
         stats: dict with search statistics
     """
     context_length = gpt_model.context_length
+    seed = seed_tokens.to(device)  # (1, T_seed)
 
-    # Each beam: (sequence_tensor, cumulative_log_prob)
-    seed = seed_tokens.to(device)
-    beams = [(seed, 0.0)]
+    # State: (B, T) tensor of active beam sequences + (B,) cumulative log-probs
+    beams_seqs = seed.expand(1, -1)               # (1, T_seed)
+    beams_lp   = torch.zeros(1, device=device)    # (1,)
 
-    # Track all beams that reached GOAL
-    goal_beams = []  # (sequence, log_prob, steps_to_goal)
-
+    goal_beams = []  # (token_list, log_prob, steps_to_goal)
     total_expanded = 0
 
     for step in range(max_steps):
         if step % 100 == 0:
             print(f"  Step {step}/{max_steps} | "
-                  f"active beams: {len(beams)} | "
+                  f"active beams: {beams_seqs.size(0)} | "
                   f"goal paths found: {len(goal_beams)}")
 
-        # If we already found goal paths and have exhausted reasonable search,
-        # stop early once we have a good set
         if goal_beams and step > min(gb[2] for gb in goal_beams) * 1.5:
             print(f"  Early stop: best goal at step {min(gb[2] for gb in goal_beams)}, "
                   f"current step {step}")
             break
 
-        candidates = []  # (sequence, log_prob)
+        B = beams_seqs.size(0)
 
-        for seq, cum_log_prob in beams:
-            # Crop to context length for forward pass
-            seq_cond = seq[:, -context_length:]
-            logits = gpt_model(seq_cond)
-            logits = logits[:, -1, :] / temperature  # (1, V)
+        # --- single batched forward pass for all B beams ---
+        seqs_cond = beams_seqs[:, -context_length:]      # (B, T_cond)
+        logits = gpt_model(seqs_cond)                    # (B, T_cond, V)
+        logits = logits[:, -1, :] / temperature          # (B, V)
+        log_probs = F.log_softmax(logits, dim=-1)        # (B, V)
 
-            log_probs = F.log_softmax(logits, dim=-1)  # (1, V)
+        # top-k branches for every beam simultaneously
+        top_lp, top_idx = torch.topk(log_probs, branch_k, dim=-1)  # (B, K)
 
-            # Get top-k branches
-            top_log_probs, top_indices = torch.topk(log_probs[0], branch_k)
+        # candidate log-probs: parent cumulative + branch log-prob
+        cand_lp  = beams_lp.unsqueeze(1) + top_lp       # (B, K)
+        cand_lp  = cand_lp.reshape(-1)                   # (B*K,)
+        cand_tok = top_idx.reshape(-1)                   # (B*K,)
+        # which parent beam each candidate came from
+        parent_idx = torch.arange(B, device=device).unsqueeze(1).expand(B, branch_k).reshape(-1)
 
-            for log_p, tok_id in zip(top_log_probs, top_indices):
-                new_seq = torch.cat(
-                    [seq, tok_id.view(1, 1)], dim=1
-                )
-                new_log_prob = cum_log_prob + log_p.item()
-                total_expanded += 1
+        total_expanded += B * branch_k
 
-                if tok_id.item() == GOAL_TOKEN:
-                    # Found a goal path!
-                    steps_to_goal = new_seq.size(1) - seed.size(1)
-                    goal_beams.append((
-                        new_seq[0].cpu().tolist(),
-                        new_log_prob,
-                        steps_to_goal,
-                    ))
-                else:
-                    candidates.append((new_seq, new_log_prob))
+        # --- split into goal vs. non-goal candidates ---
+        is_goal    = cand_tok == GOAL_TOKEN              # (B*K,)
+        non_goal   = ~is_goal
 
-        if not candidates:
+        # collect goal-reaching sequences (CPU copy, rare)
+        for i in is_goal.nonzero(as_tuple=True)[0]:
+            seq = torch.cat([beams_seqs[parent_idx[i]], cand_tok[i].unsqueeze(0)], dim=0)
+            goal_beams.append((seq.cpu().tolist(), cand_lp[i].item(), step + 1))
+
+        if not non_goal.any():
             break
 
-        # Prune: keep top beam_width by cumulative log probability
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        beams = candidates[:beam_width]
+        # build next-step beam sequences: index parent rows, append token
+        keep_parent = parent_idx[non_goal]               # (N,)
+        keep_tok    = cand_tok[non_goal].unsqueeze(1)    # (N, 1)
+        keep_lp     = cand_lp[non_goal]                  # (N,)
+
+        cand_seqs = torch.cat([beams_seqs[keep_parent], keep_tok], dim=1)  # (N, T+1)
+
+        # prune to beam_width by cumulative log-prob
+        if cand_seqs.size(0) > beam_width:
+            _, top = torch.topk(keep_lp, beam_width)
+            beams_seqs = cand_seqs[top]
+            beams_lp   = keep_lp[top]
+        else:
+            beams_seqs = cand_seqs
+            beams_lp   = keep_lp
 
     stats = {
         "total_expanded": total_expanded,
@@ -155,7 +162,6 @@ def beam_search_to_goal(
     }
 
     if goal_beams:
-        # Select shortest path to GOAL (primary), break ties by log-prob
         goal_beams.sort(key=lambda x: (x[2], -x[1]))
         best_seq, best_log_prob, best_steps = goal_beams[0]
         stats["best_steps_to_goal"] = best_steps
@@ -168,9 +174,7 @@ def beam_search_to_goal(
               f"{best_steps}-{stats['longest_goal_steps']} steps")
         return best_seq, True, stats
     else:
-        # No GOAL found — return the most probable beam
-        beams.sort(key=lambda x: x[1], reverse=True)
-        best_seq = beams[0][0][0].cpu().tolist()
+        best_seq = beams_seqs[beams_lp.argmax()].cpu().tolist()
         print(f"\n  No GOAL found after {max_steps} steps. "
               f"Returning most probable beam.")
         return best_seq, False, stats
