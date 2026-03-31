@@ -133,19 +133,26 @@ def interpolate_frames(keyframes, interp_steps=5):
     return interpolated, keyframe_indices
 
 
-def render_video(seed_frames, gen_frames, output_path, fps=4, interp_steps=5):
-    """Render seed + generated frames into a video with smooth interpolation."""
+def render_video(seed_frames, gen_frames, real_frames, output_path, fps=4, interp_steps=5):
+    """Render seed + generated frames side-by-side with real continuation."""
     n_seed_key = len(seed_frames)
-    all_keyframes = seed_frames + gen_frames
 
-    # Interpolate for smooth motion
-    all_frames, keyframe_indices = interpolate_frames(all_keyframes, interp_steps)
-    # The boundary between seed and generated in interpolated space
-    n_seed_interp = keyframe_indices[n_seed_key] if n_seed_key < len(keyframe_indices) else len(all_frames)
+    # Build sequences for generated (left) and real (right)
+    gen_keyframes = seed_frames + gen_frames
+    real_keyframes = seed_frames + real_frames
 
+    # Trim to same length
+    min_len = min(len(gen_keyframes), len(real_keyframes))
+    gen_keyframes = gen_keyframes[:min_len]
+    real_keyframes = real_keyframes[:min_len]
+
+    gen_all, gen_ki = interpolate_frames(gen_keyframes, interp_steps)
+    real_all, real_ki = interpolate_frames(real_keyframes, interp_steps)
+
+    n_seed_interp = gen_ki[n_seed_key] if n_seed_key < len(gen_ki) else len(gen_all)
     effective_fps = fps * interp_steps
 
-    fig, ax = plt.subplots(figsize=(10, 7))
+    fig, (ax_gen, ax_real) = plt.subplots(1, 2, figsize=(20, 7))
     fig.patch.set_facecolor("#1a1a2e")
 
     home_patch = mpatches.Patch(color="#3498db", label="Home")
@@ -153,22 +160,10 @@ def render_video(seed_frames, gen_frames, output_path, fps=4, interp_steps=5):
     ball_patch = mpatches.Patch(facecolor="gray", edgecolor="yellow",
                                 linewidth=2, label="Ball carrier")
 
-    def animate(frame_idx):
+    def _draw_frame(ax, feats, title, color_border):
         ax.clear()
         draw_pitch(ax)
-
-        feats = all_frames[frame_idx]
-        is_seed = frame_idx < n_seed_interp
-        phase = "SEED (real)" if is_seed else "GENERATED"
-        color_border = "#f39c12" if not is_seed else "#2ecc71"
-
-        # Show keyframe count
-        key_idx = sum(1 for ki in keyframe_indices if ki <= frame_idx)
-        total_key = len(all_keyframes)
-        ax.set_title(
-            f"Keyframe {key_idx}/{total_key}  |  {phase}",
-            fontsize=13, fontweight="bold", color=color_border, pad=10,
-        )
+        ax.set_title(title, fontsize=13, fontweight="bold", color=color_border, pad=10)
 
         for i in range(feats.size(0)):
             x_norm, y_norm, team_val, ball_val = feats[i].tolist()
@@ -179,21 +174,45 @@ def render_video(seed_frames, gen_frames, output_path, fps=4, interp_steps=5):
             marker_size = 90 if ball_val > 0.5 else 60
             ax.scatter(x, y, c=color, s=marker_size, edgecolors=edge_color,
                        linewidths=1.5, zorder=5)
+            ax.text(x, y + 1.5, str(i), fontsize=6, color="white",
+                    ha="center", va="bottom", fontweight="bold", zorder=6)
 
         ax.legend(handles=[home_patch, away_patch, ball_patch],
                   loc="upper right", fontsize=8,
                   facecolor="#1a1a2e", edgecolor="white", labelcolor="white")
 
+    def animate(frame_idx):
+        is_seed = frame_idx < n_seed_interp
+        key_idx = sum(1 for ki in gen_ki if ki <= frame_idx)
+        total_key = len(gen_keyframes)
+
+        if is_seed:
+            phase = "SEED (real)"
+            color_border = "#2ecc71"
+        else:
+            phase = "GENERATED"
+            color_border = "#f39c12"
+
+        _draw_frame(ax_gen, gen_all[frame_idx],
+                    f"Generated  |  KF {key_idx}/{total_key}  |  {phase}",
+                    color_border)
+
+        real_phase = "SEED (real)" if is_seed else "REAL continuation"
+        real_color = "#2ecc71" if is_seed else "#9b59b6"
+        _draw_frame(ax_real, real_all[frame_idx],
+                    f"Real  |  KF {key_idx}/{total_key}  |  {real_phase}",
+                    real_color)
+
     anim = animation.FuncAnimation(
-        fig, animate, frames=len(all_frames),
+        fig, animate, frames=len(gen_all),
         interval=1000 // effective_fps, blit=False,
     )
     anim.save(str(output_path), writer="ffmpeg", fps=effective_fps, dpi=120,
               savefig_kwargs={"facecolor": fig.get_facecolor()})
     plt.close()
-    print(f"Saved video to {output_path} ({len(all_keyframes)} keyframes, "
-          f"{len(all_frames)} total frames with interpolation, "
-          f"{n_seed_key} seed + {len(gen_frames)} generated)")
+    print(f"Saved video to {output_path} ({len(gen_keyframes)} keyframes, "
+          f"{len(gen_all)} total frames with interpolation, "
+          f"{n_seed_key} seed + {len(gen_frames)} generated + {len(real_frames)} real)")
 
 
 def main():
@@ -267,19 +286,28 @@ def main():
     max_start = len(seg) - seed_tokens_needed - 1
     start_idx = torch.randint(0, max(1, max_start), (1,), generator=rng).item()
 
-    # Extract seed tokens from within the segment
+    # Extract seed tokens and real continuation from the segment
     seed_token_seq = seg[start_idx : start_idx + seed_tokens_needed].tolist()
+
+    gen_tokens_needed = args.gen_frames * tokens_per_frame
+    real_end = start_idx + seed_tokens_needed + gen_tokens_needed
+    real_token_seq = seg[start_idx + seed_tokens_needed : real_end].tolist()
     print(f"Seed: {len(seed_token_seq)} tokens from segment {seg_pick} "
           f"(len={len(seg)}), offset {start_idx} "
           f"({args.seed_frames} frames x {tokens_per_frame} tokens/frame)")
+    print(f"Real continuation: {len(real_token_seq)} tokens available")
 
     # Decode seed frames
     seed_frames = decode_tokens_to_frames(
         seed_token_seq, vqvae_model, tokens_per_frame, device
     )
 
+    # Decode real continuation frames
+    real_frames = decode_tokens_to_frames(
+        real_token_seq, vqvae_model, tokens_per_frame, device
+    )
+
     # Generate new tokens with GPT
-    gen_tokens_needed = args.gen_frames * tokens_per_frame
     # Use seed as conditioning context (crop to context_length)
     cond = torch.tensor([seed_token_seq], dtype=torch.long, device=device)
     if cond.size(1) > context_length:
@@ -301,8 +329,8 @@ def main():
     )
     print(f"Decoded {len(gen_frames)} generated frames")
 
-    # Render video
-    render_video(seed_frames, gen_frames, args.output,
+    # Render video (side-by-side: generated vs real)
+    render_video(seed_frames, gen_frames, real_frames, args.output,
                  fps=args.fps, interp_steps=args.interp_steps)
 
 
