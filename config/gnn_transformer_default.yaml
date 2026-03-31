@@ -1,0 +1,46 @@
+data:
+  path: "data/"
+  seq_len: 32          # number of input frames (at 2.5fps = ~13 seconds)
+  subsample: 10        # keep every 10th frame from 25fps → 2.5fps
+  train_ratio: 0.8
+  val_ratio: 0.1
+  num_workers: 4
+  seed: 42
+
+model:
+  node_dim: 6          # x, y, vx, vy, team, is_ball
+  hidden_dim: 128
+  num_nodes: 23        # 22 players + 1 ball
+  edge_dim: 1          # distance
+  spatial_layers: 3
+  spatial_heads: 4
+  temporal_layers: 3
+  temporal_heads: 4
+  dropout: 0.1
+
+loss:
+  lambda_pos: 1.0      # position reconstruction (most important)
+  lambda_vel: 0.5      # velocity prediction
+  lambda_team: 0.1     # team classification (auxiliary)
+  lambda_ball: 0.1     # ball flag (auxiliary)
+
+training:
+  batch_size: 64
+  max_epochs: 200
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-5
+  lr_scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip_val: 1.0
+
+logging:
+  project_name: "gnn-transformer-trajectory"
+  csv_dir: "logs/gnn_transformer"
+  log_every_n_steps: 50
+
+checkpointing:
+  dir: "checkpoints/gnn_transformer"
+  monitor: "val/loss"
+  mode: "min"
+  save_top_k: 3
+  save_every_n_epochs: 10
