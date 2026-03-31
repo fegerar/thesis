@@ -3,7 +3,7 @@ data:
   seq_len: 32          # number of input frames (at 2.5fps = ~13 seconds)
   subsample: 10        # keep every 10th frame from 25fps → 2.5fps
   train_ratio: 0.8
-  val_ratio: 0.1
+  val_ratio: 0.15
   num_workers: 4
   seed: 42
 
