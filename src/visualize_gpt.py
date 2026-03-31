@@ -258,7 +258,7 @@ def main():
     start_idx = torch.randint(0, max_start, (1,), generator=rng).item()
 
     # Extract seed tokens
-    seed_token_seq = all_tokens[start_idx : start_idx + seed_tokens_needed].tolist()
+    seed_token_seq = all_tokens[start_idx : start_idx + seed_tokens_needed]
     print(f"Seed: {len(seed_token_seq)} tokens from index {start_idx} "
           f"({args.seed_frames} frames x {tokens_per_frame} tokens/frame)")
 
