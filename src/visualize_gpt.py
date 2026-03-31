@@ -32,7 +32,7 @@ from vqvae import VQVAELightningModule
 
 PITCH_X = 105.0
 PITCH_Y = 68.0
-GOAL_TOKEN = 256  # codebook_size (256) + 0-indexed
+SHOT_TOKEN = 256  # codebook_size (256) + 0-indexed
 
 
 def denormalize(x_norm, y_norm):
@@ -68,7 +68,7 @@ def decode_tokens_to_frames(token_seq, vqvae_model, tokens_per_frame, device):
     Skips GOAL tokens and groups remaining tokens into chunks of tokens_per_frame.
     """
     # Filter out GOAL tokens
-    codebook_tokens = [t for t in token_seq if t != GOAL_TOKEN]
+    codebook_tokens = [t for t in token_seq if t != SHOT_TOKEN]
 
     # Trim to multiple of tokens_per_frame
     n_usable = (len(codebook_tokens) // tokens_per_frame) * tokens_per_frame
@@ -248,18 +248,29 @@ def main():
     # Load token data for seed sequence
     token_dir = args.token_dir or gpt_cfg["data"]["token_dir"]
     from gpt.dataset import load_tokens
-    all_tokens, info = load_tokens(token_dir)
-    print(f"Loaded {info['total_tokens']} tokens from {info['num_matches']} matches")
+    segments, info = load_tokens(token_dir)
+    print(f"Loaded {info['total_tokens']} tokens from {info['num_matches']} matches "
+          f"({info['num_segments']} segments)")
 
-    # Pick a random starting position
+    # Pick a random segment long enough for the seed
     rng = torch.Generator().manual_seed(args.seed)
     seed_tokens_needed = args.seed_frames * tokens_per_frame
-    max_start = len(all_tokens) - seed_tokens_needed - 1
-    start_idx = torch.randint(0, max_start, (1,), generator=rng).item()
+    valid_indices = [i for i, s in enumerate(segments) if len(s) > seed_tokens_needed]
+    if not valid_indices:
+        raise ValueError(
+            f"No segment has enough tokens ({seed_tokens_needed}) for "
+            f"{args.seed_frames} seed frames. Longest segment: "
+            f"{max(len(s) for s in segments)} tokens."
+        )
+    seg_pick = valid_indices[torch.randint(0, len(valid_indices), (1,), generator=rng).item()]
+    seg = segments[seg_pick]
+    max_start = len(seg) - seed_tokens_needed - 1
+    start_idx = torch.randint(0, max(1, max_start), (1,), generator=rng).item()
 
-    # Extract seed tokens
-    seed_token_seq = all_tokens[start_idx : start_idx + seed_tokens_needed]
-    print(f"Seed: {len(seed_token_seq)} tokens from index {start_idx} "
+    # Extract seed tokens from within the segment
+    seed_token_seq = seg[start_idx : start_idx + seed_tokens_needed].tolist()
+    print(f"Seed: {len(seed_token_seq)} tokens from segment {seg_pick} "
+          f"(len={len(seg)}), offset {start_idx} "
           f"({args.seed_frames} frames x {tokens_per_frame} tokens/frame)")
 
     # Decode seed frames
