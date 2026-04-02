@@ -108,6 +108,10 @@ def autoregressive_rollout(model, seed_frames: torch.Tensor,
         pred = model(input_batch, edge_index, edge_attr_seq)  # (1, 23, 6)
         pred_frame = pred.squeeze(0)  # (23, 6)
 
+        # Preserve static features from seed (team, is_ball don't change)
+        pred_frame[:, 4] = buffer[0, :, 4]  # team
+        pred_frame[:, 5] = buffer[0, :, 5]  # is_ball
+
         # Recompute velocity relative to last frame in buffer
         pred_frame[:, 2] = pred_frame[:, 0] - buffer[-1, :, 0]
         pred_frame[:, 3] = pred_frame[:, 1] - buffer[-1, :, 1]
