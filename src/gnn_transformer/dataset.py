@@ -220,6 +220,20 @@ def build_match_frames(
     for pid, tid in player_teams.items():
         team_label[pid] = 0.0 if tid == home_id else 1.0
 
+    # Assign stable node indices per player (by PersonId, not by position).
+    # Home players get indices 0..10, away players get 11..21, ball is 22.
+    home_pids = sorted(
+        [pid for pid, t in team_label.items() if t == 0.0]
+    )
+    away_pids = sorted(
+        [pid for pid, t in team_label.items() if t == 1.0]
+    )
+    pid_to_idx: dict[str, int] = {}
+    for i, pid in enumerate(home_pids[:11]):
+        pid_to_idx[pid] = i
+    for i, pid in enumerate(away_pids[:11]):
+        pid_to_idx[pid] = 11 + i
+
     # Parse ball events and interpolate
     ball_events = parse_ball_events(events_path)
 
@@ -232,54 +246,33 @@ def build_match_frames(
         frame_numbers, ball_events, base_frame, base_timestamp
     )
 
-    # For each frame, find which players are active (have position data)
-    # We sort players consistently: home by x, then away by x
     frames = []
     prev_frame_tensor = None
 
     for fn in frame_numbers:
-        home_players = []
-        away_players = []
+        # Initialize all nodes to zero (handles missing players gracefully)
+        node_feats = [[0.0] * NODE_DIM for _ in range(NUM_NODES)]
 
+        # Place each player at their stable index
         for pid, positions in player_positions.items():
-            if fn not in positions:
+            if fn not in positions or pid not in pid_to_idx:
                 continue
+            idx = pid_to_idx[pid]
             x, y = positions[fn]
-            t = team_label.get(pid, 0.0)
-            if t == 0.0:
-                home_players.append((x, y, t))
-            else:
-                away_players.append((x, y, t))
+            x_norm = x / (PITCH_X / 2)
+            y_norm = y / (PITCH_Y / 2)
+            team = team_label.get(pid, 0.0)
+            node_feats[idx] = [x_norm, y_norm, 0.0, 0.0, team, 0.0]
 
-        # Sort each team by x position for consistent ordering
-        home_players.sort(key=lambda p: p[0])
-        away_players.sort(key=lambda p: p[0])
-
-        # Combine: home first, then away
-        all_players = home_players + away_players
-
-        # Pad or truncate to exactly 22
-        while len(all_players) < NUM_PLAYERS:
-            # Pad with zeros (off-pitch placeholder)
-            all_players.append((0.0, 0.0, 0.0))
-        all_players = all_players[:NUM_PLAYERS]
-
-        # Build node features (no velocity yet)
-        node_feats = []
-        for px, py, team in all_players:
-            x_norm = px / (PITCH_X / 2)
-            y_norm = py / (PITCH_Y / 2)
-            node_feats.append([x_norm, y_norm, 0.0, 0.0, team, 0.0])
-
-        # Ball node
+        # Ball node (index 22)
         bx, by = ball_pos.get(fn, (0.0, 0.0))
         bx_norm = bx / (PITCH_X / 2)
         by_norm = by / (PITCH_Y / 2)
-        node_feats.append([bx_norm, by_norm, 0.0, 0.0, 0.0, 1.0])
+        node_feats[NUM_NODES - 1] = [bx_norm, by_norm, 0.0, 0.0, 0.0, 1.0]
 
         frame_tensor = torch.tensor(node_feats, dtype=torch.float)  # (23, 6)
 
-        # Compute velocity from previous frame
+        # Compute velocity from previous frame (now indices are stable)
         if prev_frame_tensor is not None:
             frame_tensor[:, 2] = frame_tensor[:, 0] - prev_frame_tensor[:, 0]  # vx
             frame_tensor[:, 3] = frame_tensor[:, 1] - prev_frame_tensor[:, 1]  # vy
