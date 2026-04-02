@@ -39,7 +39,7 @@ logging:
   log_every_n_steps: 50
 
 checkpointing:
-  dir: "checkpoints/gnn_transformer"
+  dir: "/content/drive/MyDrive/checkpoints/gnn_transformer"
   monitor: "val/loss"
   mode: "min"
   save_top_k: 3
