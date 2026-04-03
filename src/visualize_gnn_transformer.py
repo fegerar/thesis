@@ -186,6 +186,17 @@ def render_video(seed_frames, gen_frames, real_frames, output_path,
             is_ball_node = feats[i, 5].item()
             x, y = denormalize(x_norm, y_norm)
 
+            # Velocity arrow (denormalize vx, vy to pitch scale)
+            vx = feats[i, 2].item() * (PITCH_X / 2)
+            vy = feats[i, 3].item() * (PITCH_Y / 2)
+            arrow_scale = 5.0  # scale up for visibility
+            if abs(vx) + abs(vy) > 0.05:
+                ax.annotate("", xy=(x + vx * arrow_scale, y + vy * arrow_scale),
+                            xytext=(x, y),
+                            arrowprops=dict(arrowstyle="-|>", color="white",
+                                            lw=1.0, mutation_scale=8),
+                            zorder=4)
+
             if is_ball_node > 0.5:
                 # Ball node
                 ax.scatter(x, y, c="#f1c40f", s=100, edgecolors="white",
