@@ -10,7 +10,7 @@ data:
   test_ratio: 0.1
   num_workers: 0
   seed: 42
-  subsample: 25  # take every Nth frame (25 = 1 fps at 25 Hz tracking)
+  subsample: 5  # take every Nth frame (25 = 1 fps at 25 Hz tracking)
 
 # --- Model ---
 model:
