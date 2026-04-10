@@ -189,7 +189,7 @@ def render_video(seed_frames, gen_frames, real_frames, output_path,
             # Velocity arrow (denormalize vx, vy to pitch scale)
             vx = feats[i, 2].item() * (PITCH_X / 2)
             vy = feats[i, 3].item() * (PITCH_Y / 2)
-            arrow_scale = 5.0  # scale up for visibility
+            arrow_scale = 2.0  # scale up for visibility
             if abs(vx) + abs(vy) > 0.05:
                 ax.annotate("", xy=(x + vx * arrow_scale, y + vy * arrow_scale),
                             xytext=(x, y),
