@@ -33,12 +33,13 @@ def main():
     # Build dataloaders
     data_cfg = cfg["data"]
     train_loader, val_loader, test_loader, node_dim = build_dataloaders(
-        data_path=data_cfg["path"],
+        data_dir=data_cfg["path"],
         batch_size=cfg["training"]["batch_size"],
         train_ratio=data_cfg["train_ratio"],
         val_ratio=data_cfg["val_ratio"],
         num_workers=data_cfg["num_workers"],
         seed=data_cfg["seed"],
+        subsample=data_cfg.get("subsample", 25),
     )
 
     # Build model

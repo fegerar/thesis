@@ -218,6 +218,141 @@ class VectorQuantizer(nn.Module):
             return n_dead
 
 
+class ProductQuantizer(nn.Module):
+    """Independent codebook per token slot — structurally prevents slot overlap.
+
+    Instead of one shared codebook (K, D), maintains T separate codebooks
+    each of size (K_per_slot, D). Each slot quantizes independently.
+    """
+
+    def __init__(self, num_slots: int, num_embeddings_per_slot: int,
+                 embedding_dim: int, commitment_cost: float = 0.25,
+                 use_ema: bool = True, ema_decay: float = 0.99,
+                 restart_threshold: float = 1.0):
+        super().__init__()
+        self.T = num_slots
+        self.K = num_embeddings_per_slot
+        self.D = embedding_dim
+        self.beta = commitment_cost
+        self.use_ema = use_ema
+        self.ema_decay = ema_decay
+        self.restart_threshold = restart_threshold
+
+        self.codebooks = nn.ModuleList([
+            nn.Embedding(self.K, self.D) for _ in range(self.T)
+        ])
+        for cb in self.codebooks:
+            nn.init.uniform_(cb.weight, -1 / self.K, 1 / self.K)
+
+        if use_ema:
+            for cb in self.codebooks:
+                cb.weight.requires_grad = False
+            self.ema_cluster_sizes = nn.ParameterList([
+                nn.Parameter(torch.zeros(self.K), requires_grad=False)
+                for _ in range(self.T)
+            ])
+            self.ema_embed_sums = nn.ParameterList([
+                nn.Parameter(cb.weight.clone(), requires_grad=False)
+                for cb in self.codebooks
+            ])
+
+    def forward(self, z_e):
+        """
+        Args:
+            z_e: (B, T, D)
+        Returns:
+            z_q_st: (B, T, D) — straight-through quantized
+            tokens:  (B, T)   — codebook indices per slot
+            vq_loss: scalar
+            utilization: float
+        """
+        B, T, D = z_e.shape
+        assert T == self.T, f"Expected {self.T} slots, got {T}"
+
+        z_q_list = []
+        k_list = []
+        total_vq_loss = 0.0
+        total_unique = 0
+
+        for t in range(self.T):
+            z_e_t = z_e[:, t]  # (B, D)
+            w = self.codebooks[t].weight  # (K, D)
+
+            distances = (
+                z_e_t.pow(2).sum(dim=1, keepdim=True)
+                - 2 * z_e_t @ w.T
+                + w.pow(2).sum(dim=1)
+            )  # (B, K)
+
+            k_t = distances.argmin(dim=1)  # (B,)
+            z_q_t = w[k_t]                 # (B, D)
+
+            if self.training and self.use_ema:
+                self._ema_update_slot(t, z_e_t, k_t)
+
+            # Straight-through
+            z_q_st_t = z_e_t + (z_q_t - z_e_t).detach()
+
+            # Loss
+            if self.use_ema:
+                commitment = F.mse_loss(z_e_t, z_q_t.detach())
+                total_vq_loss = total_vq_loss + self.beta * commitment
+            else:
+                codebook_loss = F.mse_loss(z_q_t, z_e_t.detach())
+                commitment = F.mse_loss(z_e_t, z_q_t.detach())
+                total_vq_loss = total_vq_loss + codebook_loss + self.beta * commitment
+
+            total_unique += k_t.unique().numel()
+            z_q_list.append(z_q_st_t)
+            k_list.append(k_t)
+
+        z_q_st = torch.stack(z_q_list, dim=1)  # (B, T, D)
+        tokens = torch.stack(k_list, dim=1)     # (B, T)
+        vq_loss = total_vq_loss / self.T
+        utilization = total_unique / (self.T * self.K)
+
+        return z_q_st, tokens, vq_loss, utilization
+
+    def _ema_update_slot(self, t, z_e, k):
+        z_e = z_e.detach()
+        k = k.detach()
+        one_hot = F.one_hot(k, self.K).float()
+        cluster_size = one_hot.sum(dim=0)
+        embed_sum = one_hot.T @ z_e
+
+        self.ema_cluster_sizes[t].data.mul_(self.ema_decay).add_(
+            cluster_size, alpha=1 - self.ema_decay
+        )
+        self.ema_embed_sums[t].data.mul_(self.ema_decay).add_(
+            embed_sum, alpha=1 - self.ema_decay
+        )
+
+        n = self.ema_cluster_sizes[t].data.sum()
+        smoothed = (
+            (self.ema_cluster_sizes[t].data + 1e-5)
+            / (n + self.K * 1e-5) * n
+        )
+        updated = self.ema_embed_sums[t].data / smoothed.unsqueeze(1)
+        self.codebooks[t].weight.data.copy_(updated)
+
+    def restart_unused_codes(self, z_e):
+        """Reinitialize unused codes across all slot codebooks."""
+        total_restarted = 0
+        with torch.no_grad():
+            for t in range(self.T):
+                usage = self.ema_cluster_sizes[t].data
+                dead = usage < self.restart_threshold
+                n_dead = dead.sum().item()
+                if n_dead > 0:
+                    z_e_t = z_e[:, t] if z_e.dim() == 3 else z_e
+                    idx = torch.randint(0, z_e_t.size(0), (n_dead,), device=z_e.device)
+                    self.codebooks[t].weight.data[dead] = z_e_t[idx].detach()
+                    self.ema_cluster_sizes[t].data[dead] = 1.0
+                    self.ema_embed_sums[t].data[dead] = z_e_t[idx].detach()
+                total_restarted += n_dead
+        return total_restarted
+
+
 class ShapegraphDecoder(nn.Module):
     def __init__(self, embed_dim: int, num_roles: int, node_out_dim: int,
                  hidden_dim: int, num_heads: int = 4, num_self_attn_layers: int = 1):
@@ -288,6 +423,7 @@ class VQVAE(nn.Module):
         super().__init__()
         self.bypass_vq = bypass_vq
         embed_dim = encoder_cfg["embed_dim"]
+        num_summary_tokens = encoder_cfg.get("num_summary_tokens", 1)
 
         self.encoder = ShapegraphEncoder(
             node_dim=node_dim,
@@ -296,16 +432,30 @@ class VQVAE(nn.Module):
             num_layers=encoder_cfg["num_layers"],
             heads=encoder_cfg["heads"],
             dropout=encoder_cfg.get("dropout", 0.1),
-            num_summary_tokens=encoder_cfg.get("num_summary_tokens", 1),
+            num_summary_tokens=num_summary_tokens,
         )
-        self.quantizer = VectorQuantizer(
-            num_embeddings=quantizer_cfg["num_embeddings"],
-            embedding_dim=embed_dim,
-            commitment_cost=quantizer_cfg["commitment_cost"],
-            use_ema=quantizer_cfg.get("use_ema", True),
-            ema_decay=quantizer_cfg.get("ema_decay", 0.99),
-            restart_threshold=quantizer_cfg.get("codebook_restart_threshold", 1.0),
-        )
+
+        quantizer_type = quantizer_cfg.get("type", "shared")
+        if quantizer_type == "product":
+            self.quantizer = ProductQuantizer(
+                num_slots=num_summary_tokens,
+                num_embeddings_per_slot=quantizer_cfg["num_embeddings"],
+                embedding_dim=embed_dim,
+                commitment_cost=quantizer_cfg["commitment_cost"],
+                use_ema=quantizer_cfg.get("use_ema", True),
+                ema_decay=quantizer_cfg.get("ema_decay", 0.99),
+                restart_threshold=quantizer_cfg.get("codebook_restart_threshold", 1.0),
+            )
+        else:
+            self.quantizer = VectorQuantizer(
+                num_embeddings=quantizer_cfg["num_embeddings"],
+                embedding_dim=embed_dim,
+                commitment_cost=quantizer_cfg["commitment_cost"],
+                use_ema=quantizer_cfg.get("use_ema", True),
+                ema_decay=quantizer_cfg.get("ema_decay", 0.99),
+                restart_threshold=quantizer_cfg.get("codebook_restart_threshold", 1.0),
+            )
+
         self.decoder = ShapegraphDecoder(
             embed_dim=embed_dim,
             num_roles=decoder_cfg["num_roles"],
@@ -340,5 +490,12 @@ class VQVAE(nn.Module):
         Args:
             tokens: (B,) for single-token or (B, T) for multi-token
         """
-        z_q = self.quantizer.codebook(tokens)
+        if isinstance(self.quantizer, ProductQuantizer):
+            # tokens: (B, T) — look up each slot in its own codebook
+            z_q_list = []
+            for t in range(tokens.shape[1]):
+                z_q_list.append(self.quantizer.codebooks[t](tokens[:, t]))
+            z_q = torch.stack(z_q_list, dim=1)  # (B, T, D)
+        else:
+            z_q = self.quantizer.codebook(tokens)
         return self.decoder(z_q)

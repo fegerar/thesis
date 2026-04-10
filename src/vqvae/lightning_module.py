@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import lightning as L
 from torch_geometric.utils import to_dense_batch
 
-from .model import VQVAE
+from .model import VQVAE, ProductQuantizer
 
 
 class VQVAELightningModule(L.LightningModule):
@@ -37,6 +37,7 @@ class VQVAELightningModule(L.LightningModule):
         self.lambda_team = loss_cfg.get("lambda_team", 1.0)
         # Soft constraint weights — small by default, tune if needed
         self.lambda_ball = loss_cfg.get("lambda_ball", 0.1)
+        self.lambda_diversity = loss_cfg.get("lambda_diversity", 0.0)
 
         self.lr = training_cfg["learning_rate"]
         self.weight_decay = training_cfg.get("weight_decay", 1e-5)
@@ -83,20 +84,31 @@ class VQVAELightningModule(L.LightningModule):
         pos_loss = pos_diff.sum() / node_mask.sum().clamp(min=1) / 2
 
         # --- Team reconstruction loss (index 2), BCE ---
-        team_logits = node_feats[..., 2]               # (B, N_roles)
-        team_gt = x_target[..., 2]                     # (B, N_roles)
+        # Mask out ball node (is_ball=1 in feature index 3) — ball has no team
+        is_ball_gt = x_target[..., 3]                          # (B, N_roles)
+        player_mask = node_mask & (is_ball_gt < 0.5)           # exclude ball
+        team_logits = node_feats[..., 2]                       # (B, N_roles)
+        team_gt = x_target[..., 2]                             # (B, N_roles)
         team_diff = F.binary_cross_entropy_with_logits(
             team_logits, team_gt, reduction="none"
         )
-        team_loss = (team_diff * node_mask).sum() / node_mask.sum().clamp(min=1)
+        team_loss = (team_diff * player_mask).sum() / player_mask.sum().clamp(min=1)
 
-        # --- Ball carrier loss (index 3), softmax (exactly 1 carrier) ---
-        mask_f = node_mask.float()
+        # --- Ball identity loss (index 3), BCE ---
         ball_logits = node_feats[..., 3]                       # (B, N_roles)
-        ball_logits = ball_logits.masked_fill(~node_mask, -1e9)
-        ball_gt = x_target[..., 3]                             # (B, N_roles) one-hot
-        ball_log_probs = F.log_softmax(ball_logits, dim=1)
-        ball_loss = -(ball_gt * ball_log_probs * mask_f).sum() / mask_f.sum().clamp(min=1)
+        ball_diff = F.binary_cross_entropy_with_logits(
+            ball_logits, is_ball_gt, reduction="none"
+        )
+        ball_loss = (ball_diff * node_mask).sum() / node_mask.sum().clamp(min=1)
+
+        # --- Diversity loss: penalize cosine similarity between slots ---
+        diversity_loss = torch.tensor(0.0, device=z_e.device)
+        if self.lambda_diversity > 0 and z_e.dim() == 3 and z_e.size(1) > 1:
+            z_e_norm = F.normalize(z_e, dim=-1)             # (B, T, D)
+            cos_sim = torch.bmm(z_e_norm, z_e_norm.transpose(1, 2))  # (B, T, T)
+            T_slots = z_e.size(1)
+            mask = ~torch.eye(T_slots, dtype=torch.bool, device=z_e.device)
+            diversity_loss = cos_sim[:, mask].mean()         # mean off-diagonal cosine sim
 
         # --- Total loss ---
         total_loss = (
@@ -104,6 +116,7 @@ class VQVAELightningModule(L.LightningModule):
             + self.lambda_team * team_loss
             + self.lambda_ball * ball_loss
             + vq_loss
+            + self.lambda_diversity * diversity_loss
         )
 
         metrics = {
@@ -112,6 +125,7 @@ class VQVAELightningModule(L.LightningModule):
             "team_loss": team_loss,
             "ball_loss": ball_loss,
             "vq_loss": vq_loss,
+            "diversity_loss": diversity_loss,
             "codebook_utilization": utilization,
         }
         return total_loss, metrics
@@ -128,9 +142,10 @@ class VQVAELightningModule(L.LightningModule):
         if self.model.quantizer.use_ema and batch_idx % 100 == 0:
             with torch.no_grad():
                 z_e = self.model.encoder(batch.x, batch.edge_index, batch.batch)
-                # Flatten (B, T, D) -> (B*T, D) for restart logic
-                if z_e.dim() == 3:
-                    z_e = z_e.reshape(-1, z_e.size(-1))
+                if not isinstance(self.model.quantizer, ProductQuantizer):
+                    # Flatten (B, T, D) -> (B*T, D) for shared codebook restart
+                    if z_e.dim() == 3:
+                        z_e = z_e.reshape(-1, z_e.size(-1))
             n_restarted = self.model.quantizer.restart_unused_codes(z_e)
             if n_restarted > 0:
                 self.log("train/codes_restarted", float(n_restarted),
