@@ -20,7 +20,9 @@ wandb/
 data/
 tokens/
 
-data_annotated/DFL-MAT-J03WMX.json
-annotations_viz.png
-timelines_roles.png
-timelines_zones.png
+*.png
+
+data_annotated/
+clusters_test/
+
+clusters/

@@ -30,7 +30,11 @@ def main():
     p.add_argument("--match", default=None, help="single match id (e.g. DFL-MAT-J03WMX)")
     p.add_argument("--stride", type=int, default=1, help="keep every Nth frame")
     p.add_argument("--max-frames", type=int, default=None)
+    p.add_argument("--zone-levels", type=int, default=5,
+                   help="odd integer >=3; granularity of the joint zone grid")
     args = p.parse_args()
+    if args.zone_levels < 3 or args.zone_levels % 2 == 0:
+        raise SystemExit("--zone-levels must be an odd integer >= 3")
 
     ids = [args.match] if args.match else _match_ids(args.data_dir)
     for mid in ids:
@@ -38,6 +42,7 @@ def main():
         path, n = annotate_match(
             args.data_dir, mid, out,
             frame_stride=args.stride, max_frames=args.max_frames,
+            zone_levels=args.zone_levels,
         )
         print(f"{mid}: wrote {n} frames -> {path}")
 

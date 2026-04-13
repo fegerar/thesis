@@ -7,6 +7,7 @@ from collections import defaultdict
 from xml.etree import ElementTree as ET
 
 import numpy as np
+from tqdm import tqdm
 
 from .shape_graph import infer_joint_zone, infer_team_roles
 
@@ -163,10 +164,14 @@ def rotate_for_team(points_xy, sign):
     return out
 
 
-def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None):
+def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None,
+                   zone_levels=5):
     info_path, pos_path = find_xmls(data_dir, match_id)
+    print(f"[{match_id}] parsing match info...")
     players, _ = parse_match_info(info_path)
+    print(f"[{match_id}] parsing positions XML (this is the slow part)...")
     frames = pivot_to_frames(pos_path, players)
+    print(f"[{match_id}] {len(frames)} frames loaded; inferring attacking direction...")
     sign = attacking_sign(frames, players)
 
     frame_keys = sorted(frames.keys(), key=lambda k: (0 if k[0] == "firstHalf" else 1, k[1]))
@@ -176,7 +181,8 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
         frame_keys = frame_keys[:max_frames]
 
     out = []
-    for section, frame_n in frame_keys:
+    for section, frame_n in tqdm(frame_keys, desc=f"[{match_id}] annotate",
+                                  unit="frame", dynamic_ncols=True):
         fr = frames[(section, frame_n)]
         ids, coords, teams, is_gk = [], [], [], []
         for pid, (x, y, role) in fr["points"].items():
@@ -191,7 +197,8 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
         # Build the joint shape graph on outfield players + ball only; GKs
         # would otherwise pin the outer thresholds to the goal lines.
         include_mask = [not gk for gk in is_gk]
-        zones = infer_joint_zone(coords, include_mask=include_mask)
+        zones = infer_joint_zone(coords, include_mask=include_mask,
+                                 n_levels=zone_levels)
         roles_out = {}
         for team in ("home", "guest"):
             idx = [i for i, t in enumerate(teams) if t == team]
