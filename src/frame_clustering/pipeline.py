@@ -37,6 +37,8 @@ def run_pipeline(args):
 
     role_cost = grid_cost(5, device)
     zone_cost = grid_cost(zone_side, device)
+    # distance matrices live on CPU (NxN float32 is 3.4 GiB at N=29k — well
+    # above what we can afford on the compute GPU alongside the Sinkhorn state).
     dists = {}
     for key, cost in (
         ("role_home", role_cost), ("role_guest", role_cost),
@@ -48,24 +50,26 @@ def run_pipeline(args):
             hist, cost, reg=args.reg, n_iter=args.sinkhorn_iters,
             pair_batch=args.pair_batch, desc=f"sinkhorn {key}",
         )
+        del hist
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     d_home = (dists["role_home"] + dists["zone_home"]) / 2.0
     d_guest = (dists["role_guest"] + dists["zone_guest"]) / 2.0
     d_total = (d_home + d_guest + dists["zone_ball"]) / 3.0
+    del dists, d_home, d_guest
 
-    d_total_cpu = d_total.detach().cpu()
-    torch.save(d_total_cpu, os.path.join(args.output_dir, "distance_matrix.pt"))
+    torch.save(d_total, os.path.join(args.output_dir, "distance_matrix.pt"))
 
-    k_max = min(args.k_max, d_total_cpu.shape[0] - 1)
+    k_max = min(args.k_max, d_total.shape[0] - 1)
     k_min = min(args.k_min, k_max)
     ks = list(range(k_min, k_max + 1))
 
-    _stamp("running k-medoids elbow sweep")
+    _stamp("running k-medoids elbow sweep (on CPU)")
     inertias, labels_by_k = [], {}
-    d_dev = d_total_cpu.to(device)
     for k in tqdm(ks, desc="k-medoids", unit="k", dynamic_ncols=True):
         labels, _medoids, inertia = kmedoids(
-            d_dev, k=k, max_iter=args.kmedoids_iters, seed=args.seed,
+            d_total, k=k, max_iter=args.kmedoids_iters, seed=args.seed,
         )
         inertias.append(inertia)
         labels_by_k[k] = labels.detach().cpu().tolist()
