@@ -9,7 +9,7 @@ import json
 
 import torch
 
-from src.annotate.shape_graph import ROLE_MATRIX
+from annotate.shape_graph import ROLE_MATRIX
 
 
 ROLE_TO_CELL = {ROLE_MATRIX[r][c]: (r, c) for r in range(5) for c in range(5)}
