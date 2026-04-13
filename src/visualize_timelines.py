@@ -121,8 +121,9 @@ def _collect(match_id, data_dir, stride, zone_levels):
                 role_depth[team][pid][fi] = pos[j]["depth"]
                 role_width[team][pid][fi] = pos[j]["width"]
                 col, row = zones[orig]
-                # orient col so it matches team-attacking-up: attacking end -> last level.
-                zone_col[team][pid][fi] = col if s == 1 else (zone_levels - 1) - col
+                # teams rotate 180° at halftime, so flip BOTH axes per team-sign
+                # (attacking end -> last col; team-relative left/right stays stable).
+                zone_col[team][pid][fi] = col 
                 zone_row[team][pid][fi] = row
                 if is_gk[orig]:
                     gk_mask[team][pid][fi] = True
@@ -305,8 +306,8 @@ def main():
     )
     _render(
         "zones", data,
-        (lambda team: data["zone_row"][team],
-         lambda team: data["zone_col"][team]),
+        (lambda team: data["zone_col"][team],
+         lambda team: data["zone_row"][team]),
         f"{args.output_prefix}_zones.png",
         args.match,
     )
