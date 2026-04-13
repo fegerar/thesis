@@ -7,7 +7,7 @@ Example:
 
 import argparse
 
-from src.frame_clustering import run_pipeline
+from frame_clustering import run_pipeline
 
 
 def main():
