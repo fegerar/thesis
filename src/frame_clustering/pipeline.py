@@ -1,4 +1,4 @@
-"""End-to-end frame clustering pipeline."""
+"""End-to-end frame clustering pipeline (smoothed Hellinger + k-medoids)."""
 
 import json
 import os
@@ -7,11 +7,10 @@ import torch
 from tqdm import tqdm
 
 from .clustering import elbow_k, kmedoids
+from .hellinger import pairwise_hellinger
 from .matrices import (
-    build_all_matrices, grid_cost, infer_zone_side, load_frames,
-    subsample, to_distribution,
+    build_all_matrices, infer_zone_side, load_frames, subsample,
 )
-from .sinkhorn import pairwise_sinkhorn
 
 
 def _stamp(msg):
@@ -35,35 +34,49 @@ def run_pipeline(args):
     for key, value in mats.items():
         torch.save(value, os.path.join(args.output_dir, f"{key}.pt"))
 
-    role_cost = grid_cost(5, device)
-    zone_cost = grid_cost(zone_side, device)
-    # distance matrices live on CPU (NxN float32 is 3.4 GiB at N=29k — well
-    # above what we can afford on the compute GPU alongside the Sinkhorn state).
+    # per-block Hellinger distance matrices (on CPU).
     dists = {}
-    for key, cost in (
-        ("role_home", role_cost), ("role_guest", role_cost),
-        ("zone_home", zone_cost), ("zone_guest", zone_cost),
-        ("zone_ball", zone_cost),
-    ):
-        hist = to_distribution(mats[key].to(device))
-        dists[key] = pairwise_sinkhorn(
-            hist, cost, reg=args.reg, n_iter=args.sinkhorn_iters,
-            pair_batch=args.pair_batch, desc=f"sinkhorn {key}",
+    for key in ("role_home", "role_guest", "zone_home", "zone_guest", "zone_ball"):
+        h = mats[key].to(device)
+        dists[key] = pairwise_hellinger(
+            h, sigma=args.smooth_sigma, row_batch=args.row_batch,
+            desc=f"hellinger {key}",
         )
-        del hist
+        del h
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    d_home = (dists["role_home"] + dists["zone_home"]) / 2.0
-    d_guest = (dists["role_guest"] + dists["zone_guest"]) / 2.0
-    d_total = (d_home + d_guest + dists["zone_ball"]) / 3.0
-    del dists, d_home, d_guest
+    # weighted combination across blocks. Normalize each block by its mean
+    # first so the weights are on a comparable scale — otherwise the sparse
+    # ball histogram (mass 1) has systematically larger Hellinger values
+    # than the team histograms (mass ~10) and dominates the total.
+    w = torch.tensor(
+        [args.weight_role, args.weight_zone, args.weight_ball],
+        dtype=torch.float32,
+    )
+    w = w / w.sum()
+    d_role = (dists["role_home"] + dists["role_guest"]) / 2.0
+    d_zone = (dists["zone_home"] + dists["zone_guest"]) / 2.0
+    d_ball = dists["zone_ball"]
+    for name, d in (("role", d_role), ("zone", d_zone), ("ball", d_ball)):
+        _stamp(f"  {name}: mean={float(d.mean()):.4g} max={float(d.max()):.4g}")
+    d_role = d_role / d_role.mean().clamp_min(1e-9)
+    d_zone = d_zone / d_zone.mean().clamp_min(1e-9)
+    d_ball = d_ball / d_ball.mean().clamp_min(1e-9)
+    d_total = w[0] * d_role + w[1] * d_zone + w[2] * d_ball
+    del dists, d_role, d_zone, d_ball
 
     torch.save(d_total, os.path.join(args.output_dir, "distance_matrix.pt"))
 
     k_max = min(args.k_max, d_total.shape[0] - 1)
     k_min = min(args.k_min, k_max)
     ks = list(range(k_min, k_max + 1))
+
+    _stamp(
+        f"distance matrix stats: shape={tuple(d_total.shape)} "
+        f"min={float(d_total.min()):.4g} max={float(d_total.max()):.4g} "
+        f"mean={float(d_total.mean()):.4g} std={float(d_total.std()):.4g}"
+    )
 
     _stamp("running k-medoids elbow sweep (on CPU)")
     inertias, labels_by_k = [], {}
@@ -73,6 +86,8 @@ def run_pipeline(args):
         )
         inertias.append(inertia)
         labels_by_k[k] = labels.detach().cpu().tolist()
+        counts = torch.bincount(labels, minlength=k).tolist()
+        _stamp(f"  k={k}: inertia={inertia:.4f}  cluster sizes={counts}")
 
     best_k = elbow_k(ks, inertias)
     _stamp(f"elbow-selected k={best_k}")
@@ -89,7 +104,12 @@ def run_pipeline(args):
         "n_frames": len(frames),
         "zone_side": zone_side,
         "device": str(device),
-        "sinkhorn": {"reg": args.reg, "iterations": args.sinkhorn_iters},
+        "distance": {
+            "kind": "smoothed_hellinger",
+            "smooth_sigma": args.smooth_sigma,
+            "weights": {"role": float(w[0]), "zone": float(w[1]),
+                        "ball": float(w[2])},
+        },
         "elbow": {"k_values": ks, "inertias": inertias, "selected_k": best_k},
         "frames": frame_meta,
     }

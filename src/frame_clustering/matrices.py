@@ -6,10 +6,11 @@ grid side used at annotation time) — then stacked across all frames.
 """
 
 import json
+import os
 
 import torch
 
-from annotate.shape_graph import ROLE_MATRIX
+from src.annotate.shape_graph import ROLE_MATRIX
 
 
 ROLE_TO_CELL = {ROLE_MATRIX[r][c]: (r, c) for r in range(5) for c in range(5)}
@@ -17,6 +18,26 @@ ROLE_SIDE = 5
 
 
 def load_frames(path):
+    if os.path.isdir(path):
+        json_files = sorted(
+            os.path.join(path, name)
+            for name in os.listdir(path)
+            if name.lower().endswith(".json")
+        )
+        if not json_files:
+            raise ValueError(f"no JSON files found in directory: {path}")
+
+        frames = []
+        for json_path in json_files:
+            with open(json_path, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(
+                    f"expected a list of frames in {json_path}, got {type(data).__name__}"
+                )
+            frames.extend(data)
+        return frames
+
     with open(path, "r") as f:
         return json.load(f)
 

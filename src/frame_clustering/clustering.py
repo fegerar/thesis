@@ -19,12 +19,14 @@ def kmedoids(dist, k, max_iter=100, seed=42):
     gen = torch.Generator(device=device).manual_seed(seed)
 
     medoids = torch.randperm(n, generator=gen, device=device)[:k].clone()
-    labels = torch.zeros(n, dtype=torch.long, device=device)
+    # sentinel labels so the first iteration always runs a medoid update
+    # (otherwise a "lucky" initial argmin can match zero-init and we'd break
+    # before any reassignment, collapsing every point into cluster 0).
+    labels = torch.full((n,), -1, dtype=torch.long, device=device)
 
     for _ in range(max_iter):
         new_labels = torch.argmin(dist[:, medoids], dim=1)
         if torch.equal(new_labels, labels):
-            labels = new_labels
             break
         labels = new_labels
         for c in range(k):
