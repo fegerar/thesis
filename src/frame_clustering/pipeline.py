@@ -109,6 +109,7 @@ def run_pipeline(args):
 
     frame_meta = [
         {"idx": i, "frame_id": fr.get("frame_id"),
+         "match_id": fr.get("match_id"),
          "timestamp": fr.get("timestamp"), "phase": fr.get("phase"),
          "cluster": int(labels_by_k[best_k][i])}
         for i, fr in enumerate(frames)

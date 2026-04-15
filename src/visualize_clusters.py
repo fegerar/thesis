@@ -8,8 +8,12 @@ Produces:
       `visualize_annotations.py`).
 
 Usage:
-    python -m src.visualize_clusters --match DFL-MAT-J03WMX \\
-        --clusters clusters/clusters.json --output-dir cluster_viz
+    python -m src.visualize_clusters --data-dir data --clusters clusters/clusters.json --output-dir cluster_viz
+
+Frames are routed to their source match via the `match_id` each frame carries
+(stamped from the annotated-JSON filename at clustering time). Each match's
+raw XML is parsed lazily and cached, so only matches that contribute to the
+chosen cluster samples are loaded.
 """
 
 import argparse
@@ -25,6 +29,25 @@ from src.annotate.dfl import (
     attacking_sign, find_xmls, parse_match_info, pivot_to_frames,
 )
 from src.visualize_annotations import _plot_frame
+
+
+class MatchCache:
+    """Lazy-loaded per-match raw XML data (pivoted frames, players, sign)."""
+
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+        self._cache = {}
+
+    def get(self, match_id):
+        if match_id not in self._cache:
+            info_path, pos_path = find_xmls(self.data_dir, match_id)
+            print(f"[cluster-viz] parsing {match_id} positions "
+                  f"(this is the slow part)...")
+            players, _ = parse_match_info(info_path)
+            pivoted = pivot_to_frames(pos_path, players)
+            sign = attacking_sign(pivoted, players)
+            self._cache[match_id] = (pivoted, players, sign)
+        return self._cache[match_id]
 
 
 def _mds_2d(dist):
@@ -69,15 +92,22 @@ def _plot_mds(coords, labels, k, output):
     print(f"[cluster-viz] saved {output}")
 
 
-def _plot_cluster_samples(c, frames_meta, pivoted, players, sign, match,
-                          n_samples, output, rng):
+def _plot_cluster_samples(c, frames_meta, match_cache, n_samples, output, rng):
     in_cluster = [fm for fm in frames_meta if fm["cluster"] == c]
     rng.shuffle(in_cluster)
     picked = []
     for fm in in_cluster:
+        mid = fm.get("match_id")
+        if not mid:
+            continue
+        try:
+            pivoted, players, sign = match_cache.get(mid)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"[cluster-viz] skipping match {mid}: {exc}")
+            continue
         key = (fm["phase"], fm["frame_id"])
         if key in pivoted:
-            picked.append(key)
+            picked.append((mid, key, pivoted, players, sign))
         if len(picked) >= n_samples:
             break
     if not picked:
@@ -89,8 +119,8 @@ def _plot_cluster_samples(c, frames_meta, pivoted, players, sign, match,
     fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4.5 * rows))
     axes = np.atleast_2d(axes).reshape(rows, cols)
     fig.patch.set_facecolor("#1a1a2e")
-    for i, key in enumerate(picked):
-        _plot_frame(axes[i // cols, i % cols], match, key, pivoted, players, sign)
+    for i, (mid, key, pivoted, players, sign) in enumerate(picked):
+        _plot_frame(axes[i // cols, i % cols], mid, key, pivoted, players, sign)
     for j in range(len(picked), rows * cols):
         axes[j // cols, j % cols].axis("off")
     fig.suptitle(
@@ -107,7 +137,6 @@ def _plot_cluster_samples(c, frames_meta, pivoted, players, sign, match,
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--match", required=True, help="match id, e.g. DFL-MAT-J03WMX")
     p.add_argument("--data-dir", default="data", help="raw DFL XML folder")
     p.add_argument("--clusters", required=True, help="clusters.json path")
     p.add_argument("--distance-matrix", default=None,
@@ -119,12 +148,21 @@ def main():
     args = p.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    with open(args.clusters) as f:
+    with open(args.clusters, encoding="utf-8") as f:
         data = json.load(f)
     frames_meta = data["frames"]
     labels = np.array([fm["cluster"] for fm in frames_meta], dtype=np.int64)
     k = int(labels.max()) + 1
-    print(f"[cluster-viz] {len(frames_meta)} frames, k={k}")
+    match_ids = sorted({fm.get("match_id") for fm in frames_meta
+                        if fm.get("match_id")})
+    print(f"[cluster-viz] {len(frames_meta)} frames, k={k}, "
+          f"matches={len(match_ids)}")
+    if not match_ids:
+        raise SystemExit(
+            "frames have no match_id — re-run cluster_frames after updating "
+            "the annotation/clustering pipeline (match_id is now stamped into "
+            "each annotated frame)."
+        )
 
     dist_path = args.distance_matrix or os.path.join(
         os.path.dirname(args.clusters), "distance_matrix.pt")
@@ -134,17 +172,12 @@ def main():
     coords = _mds_2d(dist)
     _plot_mds(coords, labels, k, os.path.join(args.output_dir, "mds.png"))
 
-    info_path, pos_path = find_xmls(args.data_dir, args.match)
-    print(f"[cluster-viz] parsing {args.match} positions (this is the slow part)...")
-    players, _teams = parse_match_info(info_path)
-    pivoted = pivot_to_frames(pos_path, players)
-    sign = attacking_sign(pivoted, players)
-
+    match_cache = MatchCache(args.data_dir)
     rng = random.Random(args.seed)
     for c in range(k):
         out = os.path.join(args.output_dir, f"cluster_{c}.png")
-        _plot_cluster_samples(c, frames_meta, pivoted, players, sign,
-                              args.match, args.n_samples, out, rng)
+        _plot_cluster_samples(c, frames_meta, match_cache, args.n_samples,
+                              out, rng)
 
 
 if __name__ == "__main__":
