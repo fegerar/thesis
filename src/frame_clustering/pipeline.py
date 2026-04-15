@@ -34,9 +34,17 @@ def run_pipeline(args):
     for key, value in mats.items():
         torch.save(value, os.path.join(args.output_dir, f"{key}.pt"))
 
+    use_ball = args.weight_ball > 0
+    block_keys = ["role_home", "role_guest", "zone_home", "zone_guest"]
+    if use_ball:
+        block_keys.append("zone_ball")
+    else:
+        _stamp("weight_ball=0: skipping ball Hellinger (frame clustering on "
+               "both teams only, ball ignored)")
+
     # per-block Hellinger distance matrices (on CPU).
     dists = {}
-    for key in ("role_home", "role_guest", "zone_home", "zone_guest", "zone_ball"):
+    for key in block_keys:
         h = mats[key].to(device)
         dists[key] = pairwise_hellinger(
             h, sigma=args.smooth_sigma, row_batch=args.row_batch,
@@ -50,21 +58,21 @@ def run_pipeline(args):
     # first so the weights are on a comparable scale — otherwise the sparse
     # ball histogram (mass 1) has systematically larger Hellinger values
     # than the team histograms (mass ~10) and dominates the total.
-    w = torch.tensor(
-        [args.weight_role, args.weight_zone, args.weight_ball],
-        dtype=torch.float32,
-    )
+    raw_weights = [args.weight_role, args.weight_zone]
+    if use_ball:
+        raw_weights.append(args.weight_ball)
+    w = torch.tensor(raw_weights, dtype=torch.float32)
     w = w / w.sum()
     d_role = (dists["role_home"] + dists["role_guest"]) / 2.0
     d_zone = (dists["zone_home"] + dists["zone_guest"]) / 2.0
-    d_ball = dists["zone_ball"]
-    for name, d in (("role", d_role), ("zone", d_zone), ("ball", d_ball)):
+    blocks = [("role", d_role), ("zone", d_zone)]
+    if use_ball:
+        blocks.append(("ball", dists["zone_ball"]))
+    for name, d in blocks:
         _stamp(f"  {name}: mean={float(d.mean()):.4g} max={float(d.max()):.4g}")
-    d_role = d_role / d_role.mean().clamp_min(1e-9)
-    d_zone = d_zone / d_zone.mean().clamp_min(1e-9)
-    d_ball = d_ball / d_ball.mean().clamp_min(1e-9)
-    d_total = w[0] * d_role + w[1] * d_zone + w[2] * d_ball
-    del dists, d_role, d_zone, d_ball
+    normed = [d / d.mean().clamp_min(1e-9) for _, d in blocks]
+    d_total = sum(wi * di for wi, di in zip(w.tolist(), normed))
+    del dists, d_role, d_zone, blocks, normed
 
     torch.save(d_total, os.path.join(args.output_dir, "distance_matrix.pt"))
 
@@ -107,8 +115,12 @@ def run_pipeline(args):
         "distance": {
             "kind": "smoothed_hellinger",
             "smooth_sigma": args.smooth_sigma,
-            "weights": {"role": float(w[0]), "zone": float(w[1]),
-                        "ball": float(w[2])},
+            "weights": (
+                {"role": float(w[0]), "zone": float(w[1]),
+                 "ball": float(w[2])}
+                if use_ball else
+                {"role": float(w[0]), "zone": float(w[1])}
+            ),
         },
         "elbow": {"k_values": ks, "inertias": inertias, "selected_k": best_k},
         "frames": frame_meta,
