@@ -69,6 +69,8 @@ def frame_matrices(frame, zone_side):
     zone_guest = torch.zeros((zone_side, zone_side), dtype=torch.float32)
     zone_ball = torch.zeros((zone_side, zone_side), dtype=torch.float32)
 
+    attack_sign = frame.get("attack_sign") or {}
+
     for p in frame.get("players", []):
         team = p.get("team")
         role = p.get("tactical_role")
@@ -90,6 +92,14 @@ def frame_matrices(frame, zone_side):
                     zone_home[row, col] += 1.0
                 elif team == "guest":
                     zone_guest[row, col] += 1.0
+
+    # Orient each team's zone so attacking is +col (right of the image):
+    # defending end on the left, attacking end on the right. Ball stays in
+    # pitch frame. Falls back to no flip if the annotation predates attack_sign.
+    if int(attack_sign.get("home", 1)) < 0:
+        zone_home = zone_home.flip(dims=[1])
+    if int(attack_sign.get("guest", 1)) < 0:
+        zone_guest = zone_guest.flip(dims=[1])
 
     return {
         "role_home": role_home, "role_guest": role_guest,

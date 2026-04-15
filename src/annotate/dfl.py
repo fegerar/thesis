@@ -233,6 +233,10 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
             "frame_id": frame_n,
             "timestamp": fr["ts"],
             "phase": section,
+            "attack_sign": {
+                "home": int(sign.get((section, "home"), 1)),
+                "guest": int(sign.get((section, "guest"), 1)),
+            },
             "players": players_out,
         })
 

@@ -23,22 +23,6 @@ def _stamp(msg):
     print(f"[team-cluster] {msg}")
 
 
-def _canonicalize_zone(zone):
-    """Mirror each zone histogram along the pitch-length axis (columns) so
-    its center of mass sits in the left half. Removes the ambiguity about
-    which goal the team defends (home vs guest, first vs second half).
-    """
-    n, _rows, cols = zone.shape
-    col_idx = torch.arange(cols, dtype=torch.float32)
-    totals = zone.sum(dim=(1, 2)).clamp_min(1e-9)
-    col_com = (zone.sum(dim=1) * col_idx).sum(dim=1) / totals
-    flip_mask = col_com > (cols - 1) / 2.0
-    if flip_mask.any():
-        zone = zone.clone()
-        zone[flip_mask] = zone[flip_mask].flip(dims=[2])
-    return zone
-
-
 def run_team_pipeline(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -58,12 +42,6 @@ def run_team_pipeline(args):
     n = role.shape[0]
     _stamp(f"team-frames={n} (home={mats['role_home'].shape[0]} + "
            f"guest={mats['role_guest'].shape[0]})")
-
-    # Canonicalize zone along the pitch-length axis so each team-frame's
-    # zone COM sits in the left half. Roles are already team-POV (rotated
-    # at annotation time); zones are in pitch frame, so without this the
-    # clustering conflates "which goal you defend" with tactical state.
-    zone = _canonicalize_zone(zone)
 
     torch.save(role, os.path.join(args.output_dir, "role.pt"))
     torch.save(zone, os.path.join(args.output_dir, "zone.pt"))
@@ -137,7 +115,7 @@ def run_team_pipeline(args):
             "kind": "smoothed_hellinger_team",
             "smooth_sigma_role": args.smooth_sigma_role,
             "smooth_sigma_zone": args.smooth_sigma_zone,
-            "zone_canonicalized": True,
+            "zone_oriented": "attacking=+col",
             "weights": {"role": float(w[0]), "zone": float(w[1])},
         },
         "elbow": {"k_values": ks, "inertias": inertias, "selected_k": best_k},
