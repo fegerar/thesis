@@ -22,7 +22,13 @@ def main():
     p.add_argument("--max-frames", type=int, default=None)
     p.add_argument("--zone-levels", type=int, default=None,
                    help="grid side length of the joint zone; inferred from the "
-                        "data when omitted (must match the annotation run)")
+                        "data when omitted (must match the annotation run for "
+                        "shape_graph mode; required for pitch mode)")
+    p.add_argument("--zone-mode", choices=("shape_graph", "pitch"),
+                   default="shape_graph",
+                   help="shape_graph: use the per-frame shape-graph zone (default). "
+                        "pitch: bin players on a fixed NxN grid over the pitch "
+                        "(uses pitch_xy; requires re-annotated frames).")
     p.add_argument("--smooth-sigma", type=float, default=0.7,
                    help="Gaussian sigma (in grid cells) applied to each "
                         "histogram before the Hellinger distance; 0 disables it")

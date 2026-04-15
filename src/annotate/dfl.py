@@ -217,16 +217,18 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
 
         players_out = []
         for i, pid in enumerate(ids):
+            xy = [float(coords[i, 0]), float(coords[i, 1])]
             if pid == "BALL":
                 players_out.append({
                     "player_id": "BALL", "team": None,
                     "tactical_role": "BALL", "zone": zones[i],
+                    "pitch_xy": xy,
                 })
             else:
                 players_out.append({
                     "player_id": pid, "team": teams[i],
                     "tactical_role": roles_out.get(pid, "UNKNOWN"),
-                    "zone": zones[i],
+                    "zone": zones[i], "pitch_xy": xy,
                 })
 
         out.append({

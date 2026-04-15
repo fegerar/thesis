@@ -16,6 +16,24 @@ from src.annotate.shape_graph import ROLE_MATRIX
 ROLE_TO_CELL = {ROLE_MATRIX[r][c]: (r, c) for r in range(5) for c in range(5)}
 ROLE_SIDE = 5
 
+# DFL raw coords are centered at (0,0); the pitch spans [-52.5, 52.5] x [-34, 34].
+PITCH_X, PITCH_Y = 105.0, 68.0
+
+
+def _pitch_bin(xy, grid_side):
+    """Bin a raw (x, y) pitch coordinate into a (col, row) cell on a
+    grid_side x grid_side grid. Matches the shape-graph convention:
+    col follows +x (left-to-right), row is flipped so [0, 0] = high-y.
+    """
+    x, y = float(xy[0]), float(xy[1])
+    hx, hy = PITCH_X / 2.0, PITCH_Y / 2.0
+    col = int((x + hx) / PITCH_X * grid_side)
+    col = max(0, min(grid_side - 1, col))
+    depth = int((y + hy) / PITCH_Y * grid_side)
+    depth = max(0, min(grid_side - 1, depth))
+    row = (grid_side - 1) - depth
+    return col, row
+
 
 def load_frames(path):
     if os.path.isdir(path):
@@ -69,7 +87,7 @@ def infer_zone_side(frames):
     return hi + 1
 
 
-def frame_matrices(frame, zone_side):
+def frame_matrices(frame, zone_side, zone_mode="shape_graph"):
     role_home = torch.zeros((ROLE_SIDE, ROLE_SIDE), dtype=torch.float32)
     role_guest = torch.zeros((ROLE_SIDE, ROLE_SIDE), dtype=torch.float32)
     zone_home = torch.zeros((zone_side, zone_side), dtype=torch.float32)
@@ -81,7 +99,6 @@ def frame_matrices(frame, zone_side):
     for p in frame.get("players", []):
         team = p.get("team")
         role = p.get("tactical_role")
-        zone = p.get("zone")
 
         if role in ROLE_TO_CELL:
             rr, rc = ROLE_TO_CELL[role]
@@ -90,15 +107,25 @@ def frame_matrices(frame, zone_side):
             elif team == "guest":
                 role_guest[rr, rc] += 1.0
 
-        if isinstance(zone, list) and len(zone) == 2:
+        if zone_mode == "pitch":
+            xy = p.get("pitch_xy")
+            if not (isinstance(xy, list) and len(xy) == 2):
+                continue
+            col, row = _pitch_bin(xy, zone_side)
+        else:
+            zone = p.get("zone")
+            if not (isinstance(zone, list) and len(zone) == 2):
+                continue
             col, row = int(zone[0]), int(zone[1])
-            if 0 <= row < zone_side and 0 <= col < zone_side:
-                if p.get("player_id") == "BALL":
-                    zone_ball[row, col] += 1.0
-                elif team == "home":
-                    zone_home[row, col] += 1.0
-                elif team == "guest":
-                    zone_guest[row, col] += 1.0
+            if not (0 <= row < zone_side and 0 <= col < zone_side):
+                continue
+
+        if p.get("player_id") == "BALL":
+            zone_ball[row, col] += 1.0
+        elif team == "home":
+            zone_home[row, col] += 1.0
+        elif team == "guest":
+            zone_guest[row, col] += 1.0
 
     # Orient each team's zone so attacking is +col (right of the image):
     # defending end on the left, attacking end on the right. Ball stays in
@@ -115,8 +142,8 @@ def frame_matrices(frame, zone_side):
     }
 
 
-def build_all_matrices(frames, zone_side):
-    mats = [frame_matrices(fr, zone_side) for fr in frames]
+def build_all_matrices(frames, zone_side, zone_mode="shape_graph"):
+    mats = [frame_matrices(fr, zone_side, zone_mode=zone_mode) for fr in frames]
     if not mats:
         return {}
     return {k: torch.stack([m[k] for m in mats], dim=0) for k in mats[0]}

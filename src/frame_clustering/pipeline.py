@@ -26,11 +26,18 @@ def run_pipeline(args):
     if not frames:
         raise ValueError("no frames after stride/max-frames filtering")
 
-    zone_side = args.zone_levels or infer_zone_side(frames)
+    zone_mode = getattr(args, "zone_mode", "shape_graph")
+    if zone_mode == "pitch":
+        if not args.zone_levels:
+            raise ValueError("--zone-levels is required when --zone-mode pitch")
+        zone_side = args.zone_levels
+    else:
+        zone_side = args.zone_levels or infer_zone_side(frames)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _stamp(f"device={device}  frames={len(frames)}  zone_side={zone_side}")
+    _stamp(f"device={device}  frames={len(frames)}  zone_side={zone_side}  "
+           f"zone_mode={zone_mode}")
 
-    mats = build_all_matrices(frames, zone_side)
+    mats = build_all_matrices(frames, zone_side, zone_mode=zone_mode)
     for key, value in mats.items():
         torch.save(value, os.path.join(args.output_dir, f"{key}.pt"))
 
@@ -114,6 +121,7 @@ def run_pipeline(args):
         "device": str(device),
         "distance": {
             "kind": "smoothed_hellinger",
+            "zone_mode": zone_mode,
             "smooth_sigma": args.smooth_sigma,
             "weights": (
                 {"role": float(w[0]), "zone": float(w[1]),
