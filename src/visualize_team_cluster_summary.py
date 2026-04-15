@@ -10,8 +10,7 @@ Produces:
     team_overview.png             — cluster frequency + home/guest split.
 
 Usage:
-    python -m src.visualize_team_cluster_summary \\
-        --clusters-dir team_clusters --output-dir team_cluster_viz
+    python -m src.visualize_team_cluster_summary --clusters-dir team_clusters --output-dir team_cluster_viz
 """
 
 import argparse

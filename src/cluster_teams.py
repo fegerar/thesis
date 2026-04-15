@@ -23,8 +23,11 @@ def main():
     p.add_argument("--zone-levels", type=int, default=None,
                    help="grid side length of the joint zone; inferred from the "
                         "data when omitted (must match the annotation run)")
-    p.add_argument("--smooth-sigma", type=float, default=0.7,
-                   help="Gaussian sigma (in grid cells) applied to each "
+    p.add_argument("--smooth-sigma-role", type=float, default=0.3,
+                   help="Gaussian sigma (in grid cells) applied to the role "
+                        "histogram before the Hellinger distance; 0 disables it")
+    p.add_argument("--smooth-sigma-zone", type=float, default=0.7,
+                   help="Gaussian sigma (in grid cells) applied to the zone "
                         "histogram before the Hellinger distance; 0 disables it")
     p.add_argument("--row-batch", type=int, default=2048)
     p.add_argument("--weight-role", type=float, default=0.5)
