@@ -35,11 +35,18 @@ def load_frames(path):
                 raise ValueError(
                     f"expected a list of frames in {json_path}, got {type(data).__name__}"
                 )
+            match_id = os.path.splitext(os.path.basename(json_path))[0]
+            for fr in data:
+                fr.setdefault("match_id", match_id)
             frames.extend(data)
         return frames
 
     with open(path, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+    match_id = os.path.splitext(os.path.basename(path))[0]
+    for fr in data:
+        fr.setdefault("match_id", match_id)
+    return data
 
 
 def subsample(frames, stride, max_frames):

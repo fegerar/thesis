@@ -96,12 +96,14 @@ def run_team_pipeline(args):
     for i, fr in enumerate(frames):
         samples.append({
             "team": "home", "frame_idx": i,
+            "match_id": fr.get("match_id"),
             "frame_id": fr.get("frame_id"), "phase": fr.get("phase"),
             "cluster": int(labels_by_k[best_k][i]),
         })
     for i, fr in enumerate(frames):
         samples.append({
             "team": "guest", "frame_idx": i,
+            "match_id": fr.get("match_id"),
             "frame_id": fr.get("frame_id"), "phase": fr.get("phase"),
             "cluster": int(labels_by_k[best_k][n_home + i]),
         })
