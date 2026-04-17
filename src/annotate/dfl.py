@@ -124,6 +124,7 @@ def pivot_to_frames(positions_path, players):
             if is_ball:
                 fr["points"]["BALL"] = (r["X"], r["Y"], None)
                 fr["ball_status"] = r.get("BallStatus")
+                fr["ball_possession_tid"] = r.get("BallPossession")
             else:
                 meta = players.get(pid)
                 if meta is None:
@@ -168,7 +169,8 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
                    zone_levels=5):
     info_path, pos_path = find_xmls(data_dir, match_id)
     print(f"[{match_id}] parsing match info...")
-    players, _ = parse_match_info(info_path)
+    players, teams_map = parse_match_info(info_path)
+    tid_to_role = {v["team_id"]: k for k, v in teams_map.items()}
     print(f"[{match_id}] parsing positions XML (this is the slow part)...")
     frames = pivot_to_frames(pos_path, players)
     print(f"[{match_id}] {len(frames)} frames loaded; inferring attacking direction...")
@@ -231,10 +233,14 @@ def annotate_match(data_dir, match_id, out_path, frame_stride=1, max_frames=None
                     "zone": zones[i], "pitch_xy": xy,
                 })
 
+        bp_tid = fr.get("ball_possession_tid")
+        possession = tid_to_role.get(bp_tid) if bp_tid else None
+
         out.append({
             "frame_id": frame_n,
             "timestamp": fr["ts"],
             "phase": section,
+            "possession": possession,
             "attack_sign": {
                 "home": int(sign.get((section, "home"), 1)),
                 "guest": int(sign.get((section, "guest"), 1)),

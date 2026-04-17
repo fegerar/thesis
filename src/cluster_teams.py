@@ -42,6 +42,11 @@ def main():
     p.add_argument("--k-max", type=int, default=12)
     p.add_argument("--kmedoids-iters", type=int, default=100)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--split-possession", action="store_true",
+                   help="split team-frames into in-possession vs "
+                        "out-of-possession and cluster each group separately. "
+                        "Requires re-annotated data with the 'possession' field "
+                        "(from DFL BallPossession).")
     args = p.parse_args()
     run_team_pipeline(args)
 
