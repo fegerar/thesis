@@ -158,41 +158,41 @@ def main():
 
     kickoff = timedelta(seconds=args.kickoff_at)
 
-    srt_entries = []
-    idx = 0
-    prev_text = None
+    def _video_time(ts, phase):
+        if phase == "firstHalf" and t0_first:
+            return kickoff + (ts - t0_first)
+        if phase == "secondHalf" and t0_second:
+            elapsed = ts - t0_second
+            if args.second_half_kickoff_at is not None:
+                return timedelta(seconds=args.second_half_kickoff_at) + elapsed
+            if t0_first:
+                return kickoff + (t0_second - t0_first) + elapsed
+            return kickoff + elapsed
+        return None
 
+    # Build a list of (video_time, text) for frames that have cluster info.
+    # Carry forward last known cluster when a frame has no entry (stride gap).
+    last_home, last_guest = None, None
+    events = []
     for i, fr in enumerate(ann_frames):
-        phase = fr.get("phase")
-        fid = fr.get("frame_id")
         ts = timestamps[i]
         if ts is None:
             continue
-
-        # compute video time for this frame
-        if phase == "firstHalf" and t0_first:
-            game_elapsed = ts - t0_first
-            video_time = kickoff + game_elapsed
-        elif phase == "secondHalf" and t0_second:
-            game_elapsed = ts - t0_second
-            if args.second_half_kickoff_at is not None:
-                video_time = timedelta(
-                    seconds=args.second_half_kickoff_at) + game_elapsed
-            elif t0_first:
-                # estimate: second half video position = kickoff + first half
-                # duration + halftime gap. User should set
-                # --second-half-kickoff-at for accuracy.
-                first_half_dur = (t0_second - t0_first) if t0_first else timedelta(0)
-                video_time = kickoff + first_half_dur + game_elapsed
-            else:
-                video_time = kickoff + game_elapsed
-        else:
+        phase = fr.get("phase")
+        vt = _video_time(ts, phase)
+        if vt is None:
             continue
 
+        fid = fr.get("frame_id")
         h_entry = lookup.get((phase, fid, "home"))
         g_entry = lookup.get((phase, fid, "guest"))
-        h_label = _cluster_label(h_entry)
-        g_label = _cluster_label(g_entry)
+        if h_entry:
+            last_home = h_entry
+        if g_entry:
+            last_guest = g_entry
+
+        h_label = _cluster_label(last_home)
+        g_label = _cluster_label(last_guest)
 
         poss = fr.get("possession")
         ball_str = ""
@@ -201,38 +201,25 @@ def main():
             ball_str = f"  {ball_icon} ball: {poss}"
 
         text = f"HOME: {h_label}    GUEST: {g_label}{ball_str}"
+        events.append((vt, text, phase, fid))
 
-        # skip duplicate consecutive subtitles to keep the file compact
-        if text == prev_text:
-            continue
-        prev_text = text
-
-        start = video_time
-        # end: find next different subtitle or add a default duration
-        if i + 1 < len(ann_frames) and timestamps[i + 1] is not None:
-            next_ts = timestamps[i + 1]
-            if phase == "firstHalf" and t0_first:
-                end = kickoff + (next_ts - t0_first)
-            elif phase == "secondHalf" and t0_second:
-                if args.second_half_kickoff_at is not None:
-                    end = timedelta(
-                        seconds=args.second_half_kickoff_at) + (next_ts - t0_second)
-                elif t0_first:
-                    first_half_dur = t0_second - t0_first
-                    end = kickoff + first_half_dur + (next_ts - t0_second)
-                else:
-                    end = kickoff + (next_ts - t0_second)
-            else:
-                end = start + timedelta(milliseconds=500)
-        else:
-            end = start + timedelta(milliseconds=500)
+    # Collapse consecutive identical labels into single long-duration subtitles.
+    srt_entries = []
+    idx = 0
+    i = 0
+    while i < len(events):
+        start_vt, text, phase, fid = events[i]
+        j = i + 1
+        while j < len(events) and events[j][1] == text:
+            j += 1
+        end_vt = events[j][0] if j < len(events) else (start_vt + timedelta(seconds=5))
+        i = j
 
         idx += 1
-        display_text = f"{text}\n{phase} f{fid}"
         srt_entries.append(
             f"{idx}\n"
-            f"{_fmt_srt_time(start)} --> {_fmt_srt_time(end)}\n"
-            f"{display_text}\n"
+            f"{_fmt_srt_time(start_vt)} --> {_fmt_srt_time(end_vt)}\n"
+            f"{text}\n"
         )
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -242,7 +229,7 @@ def main():
     print(f"[cluster-subs] wrote {idx} subtitles to {args.output}")
     print(f"[cluster-subs] play with:")
     print(f"    mpv game.mp4 --sub-file={args.output}")
-    print(f"[cluster-subs] fine-tune sync: z/Z keys in mpv (±100ms)")
+    print("[cluster-subs] fine-tune sync: z/Z keys in mpv (±100ms)")
 
 
 if __name__ == "__main__":
